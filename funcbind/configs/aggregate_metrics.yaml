@@ -1,0 +1,5 @@
+sweep_id_list: ["ppny1fwm"]
+fb_pretrained_path_ref: exps/funcbind/fb_unified
+cdrs_aug_ref: null
+max_number: null
+use_single_dataset: xdocked

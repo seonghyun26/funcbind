@@ -1,0 +1,18 @@
+_target_: funcbind.sampling.DiffusionSampler
+name: diffusion
+sigma_min: 0.1
+sigma_max: 20.0
+rho: 7.0
+N: 128
+val_sigmas: [0.1, 0.5, 1, 2, 5, 10, 20]  # [0.005, 0.02, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
+verbose: false
+S_churn: 120
+S_min: 0.05
+S_max: 50
+S_noise: 1.003
+beta: 1.0
+log_sigma_mean: 1.2
+log_sigma_std: 0.8
+dirname_sampler: ${sampler.name}_s${sampler.N}
+modality_cond: True
+save_trajectory: false

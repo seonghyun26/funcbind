@@ -1,0 +1,17 @@
+defaults:
+  - mcmc: baoab
+
+_target_: funcbind.sampling.MultiMeasurementOATSampler
+name: multi_measurement_walkjump
+sigma: 7.0
+m: 16
+mcmc:
+  steps: 100
+val_sigmas: null
+beta: 1.0
+warm_start: false
+callbacks: null
+y_init_distribution: null
+verbose: false
+dirname_sampler: ${sampler.name}_s${sampler.mcmc.steps}
+modality_cond: True

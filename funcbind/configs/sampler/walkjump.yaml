@@ -1,0 +1,11 @@
+defaults:
+  - mcmc: baoab
+
+_target_: funcbind.sampling.SingleMeasurementSampler
+name: walkjump
+beta: 1.0
+sigma: 7.0
+val_sigmas: null
+y_init_distribution: null
+dirname_sampler: ${sampler.name}_s${sampler.mcmc.steps}
+modality_cond: True

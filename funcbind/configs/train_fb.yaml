@@ -1,0 +1,50 @@
+defaults:
+  - dset: omni
+  - denoiser: unet_edm2_XXXL
+  - sampling: sampling_xsmall
+  - sampler: diffusion
+  - override hydra/job_logging: custom
+  - _self_
+
+debug: False
+wandb: True
+seed: 1234
+nf_pretrained_path: exps/neural_field/nf_unified
+exp_dir: exps/funcbind
+exp_name: "fb_${dset.input_dataset}_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
+dirname: "${exp_dir}/${exp_name}"
+fb_pretrained_path: null
+receptor_dropout: False
+n_samples: null
+
+# training params
+num_epochs: 100000
+dset:
+  batch_size: 96
+  rebalance: True
+  beta2: 0.95
+denoiser:
+  dropout: 0.0
+  cfg_dropout: 0.1
+sample_every: 10
+val_every: 5
+
+# optim params
+lr: 0.01
+wd: 0.0
+use_lr_schedule: True
+ref_batches: 20040
+ema_decay: 0.9999
+ema_stds: [0.05]
+gpu_type: "b200"  # Options: b200, a100
+
+# set the running dir
+hydra:
+  run:
+    dir: ./${dirname}
+  job:
+    config:
+      override_dirname:
+        kv_sep: ""
+        item_sep: "_"
+        exclude_keys: ["exp_dir"]

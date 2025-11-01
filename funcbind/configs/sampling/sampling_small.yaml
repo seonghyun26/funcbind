@@ -1,0 +1,26 @@
+n_samples_per_receptor: 100
+n_targets: 100
+n_chains: 220
+n_attempts: 10
+_batch_sizes:
+  "b200": 5000  # 50000: quick sampling
+  "a100": 1000
+batch_size_render: ${oc.select:sampling._batch_sizes.${gpu_type},2600}
+_batch_sizes_codes:
+  "b200": 110
+  "a100": 55
+batch_size_render_codes: ${oc.select:sampling._batch_sizes_codes.${gpu_type},55}
+chain_init: denovo
+docking_mode: None  # vina_score  # vina_full
+exhaustiveness: 32
+posecheck: True
+split: test
+remove_fragment: True
+remove_atoms_too_close: False
+receptor_ids: null
+unique_only: False
+use_metrics: True
+rotate_receptor: True
+filter_length: True
+save_voxel: False
+flexible: True

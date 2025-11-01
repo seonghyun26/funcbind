@@ -1,0 +1,4 @@
+name: vanilla_cnn
+level_channels: [256, 512, 1024]
+downsample_map: [False, False, False]
+dilations: [1, 1, 1]

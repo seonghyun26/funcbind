@@ -1,0 +1,38 @@
+defaults:
+  - dset: omni
+  - encoder: cnn
+  - decoder: decoder
+  - sampling: sampling_xsmall
+  - override hydra/job_logging: custom
+  - _self_
+
+debug: False
+wandb: True
+seed: 1234
+exp_dir: exps/neural_field
+exp_name: "nf_${dset.input_dataset}_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
+dirname: "${exp_dir}/${exp_name}"
+nf_pretrained_path: null
+n_samples: null
+overwrite_config: True
+
+# training params
+n_epochs: 10000
+eval_every: 5
+dset:
+  rebalance: True
+reg_weight: 1e-5
+
+# optim params
+gpu_type: "b200"  # Options: b200, a100
+
+# set the running dir
+hydra:
+  run:
+    dir: ./${dirname}
+  job:
+    config:
+      override_dirname:
+        kv_sep: ""
+        item_sep: "_"
+        exclude_keys: ["exp_dir"]

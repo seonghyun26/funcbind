@@ -1,0 +1,9 @@
+model_name: unet_edm2_XXXL
+model_channels: 512
+ch_mults: [1, 2, 3, 4]
+attn_resolutions: [4, 2]  # the last two resolutions. Change this if grid_dim diff of 16
+n_blocks: 3
+dropout: 0.1
+downsample_map: [True, False]
+level_channels: [64, 64]
+cfg_dropout: 0.0

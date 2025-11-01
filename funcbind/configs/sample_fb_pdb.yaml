@@ -1,0 +1,37 @@
+defaults:
+  - sampling: sampling_small
+  - sampler: diffusion_sampling
+  - override hydra/job_logging: custom
+  - _self_
+
+debug: False
+wandb: True
+seed: 1234
+fb_pretrained_path: exps/funcbind/fb_unified
+exp_name: "sampling_fb_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
+dirname: ${fb_pretrained_path}/eval_${sampling.split}_${sampler.dirname_sampler}_${exp_name}
+out_dir: res
+save_dir: ${dirname}/samples/${out_dir}
+pdb_path: test/10677_7chb_HL_R.pdb
+receptor_center: null
+dset:
+  input_dataset: omni_v1
+  use_single_dataset: sabdab
+denoiser:
+  cfg_dropout: 0.0
+sampling:
+  filter_length: False
+  n_chains: 50
+  n_attempts: 1
+gpu_type: "b200"  # Options: b200, a100
+
+# set the running dir
+hydra:
+  run:
+    dir: ${save_dir}
+  job:
+    config:
+      override_dirname:
+        kv_sep: ""
+        item_sep: "_"
+        exclude_keys: ["save_dir", "exp_dir", "fb_pretrained_path", "out_dir"]

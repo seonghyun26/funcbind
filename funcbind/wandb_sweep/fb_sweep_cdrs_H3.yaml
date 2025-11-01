@@ -1,0 +1,29 @@
+project: funcbind
+entity: prescient-design
+method: grid
+
+parameters:
+  seed:
+    values: [1]
+  sampling.receptor_ids:
+    values:
+      - [0, 3]
+      - [1, 2, 4, 5, 6]
+      - [7, 8, 9, 10, 11, 12]
+      - [13, 14, 15, 16, 17, 18]
+  sampling.n_chains:
+    values: [880]
+  sampling.n_attempts:
+    values: [10]
+  dset.cdrs_aug:
+    values:
+      - []
+
+program: sample_fb.py
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--config-name"
+  - "sample_fb_ab_H3"
+  - ${args_no_hyphens}

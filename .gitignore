@@ -1,0 +1,60 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local Python/Conda environments
+.venv/
+venv/
+env/
+.repro-env/
+.python-version
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+*.so
+
+# Downloaded datasets, checkpoints, and reproduction artifacts
+/funcbind/dataset/data/
+/exps/
+/artifacts/
+*.aria2
+*.part
+*.tar
+*.tar.gz
+*.tgz
+
+# Experiment managers and generated run directories
+/wandb/
+/outputs/
+/multirun/
+**/.hydra/
+*.log
+
+# Temporary and profiling files
+*.tmp
+*.temp
+*.prof
+*.trace
+core
+core.*
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Agent tooling local state (oh-my-claudecode)
+.omc/

@@ -1,0 +1,19 @@
+type: gaussian_splat
+compile: false
+
+# Shared encoder/latent dimensionality.
+code_dim: 128
+
+# Gaussian parameter head.
+hidden_dim: 512
+gaussians_per_voxel: 1
+scale_min: 0.35
+scale_max: 1.25
+offset_bound: 0.5
+initial_opacity: 0.05
+
+# Differentiable local renderer.
+opacity_threshold: 0.01
+cutoff_sigma: 3.0
+query_chunk_size: 512
+gaussian_chunk_size: 512

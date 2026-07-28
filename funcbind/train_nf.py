@@ -114,8 +114,12 @@ def main(config):
 
     ##############################
     # data loaders
-    loader_train = create_field_loaders(config, split="train", fabric=fabric)
-    loader_val = create_field_loaders(config, split="val", fabric=fabric)
+    loader_train = create_field_loaders(
+        config, split="train", fabric=fabric, n_samples=config.get("n_samples")
+    )
+    loader_val = create_field_loaders(
+        config, split="val", fabric=fabric, n_samples=config.get("n_samples")
+    )
 
     config_rec = copy.deepcopy(config)
     config_rec["dset"]["batch_size"] = 1  # for reconstruction we use batch size of 1
@@ -158,7 +162,7 @@ def main(config):
         except Exception as e:
             fabric.print(f"Error during validation: {e}")
         try:
-            save_checkpoint(
+            best_loss = save_checkpoint(
                 epoch, config, loss_val, best_loss, enc, dec, optim_enc, optim_dec, fabric, acc_iter,
             )
         except Exception as e:

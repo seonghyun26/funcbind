@@ -1,0 +1,71 @@
+defaults:
+  - dset: omni
+  - encoder: cnn
+  - decoder: decoder
+  - override hydra/job_logging: custom
+  - _self_
+
+seed: 1234
+wandb: false
+n_devs: 1
+variant: inr
+exp_name: "all_target_reconstruction_${variant}_${now:%Y%m%d}_${now:%H%M%S}"
+output_dir: "exps/decoder_ablation/${exp_name}"
+dirname: ${output_dir}
+
+# Complete MCPP small-molecule test split. end_index=null means dataset length.
+split: test
+start_index: 0
+end_index: null
+resume: true
+fail_fast: false
+
+# Controlled per-target overfit, matching compare_decoders.yaml.
+steps: 250
+report_every: 25
+train_encoder: true
+lr_encoder: 1e-4
+lr_decoder: 1e-4
+gradient_clip_norm: 1.0
+timing_warmup_steps: 10
+save_checkpoints: false
+full_grid_metrics: true
+evaluation_query_chunk_size: 4096
+atom_match_distance: 1.0
+reg_weight: 0.0
+
+dset:
+  use_single_dataset: mcpp
+  data_aug: false
+  rebalance: false
+  batch_size: 1
+  num_workers: 0
+  n_points: 4096
+
+inr_decoder:
+  type: inr
+  compile: false
+  hidden_dim: 3072
+  code_dim: 128
+  coord_dim: 3
+  n_layers: 6
+  input_scale: 64
+
+gaussian_splat_decoder:
+  type: gaussian_splat
+  compile: false
+  hidden_dim: 512
+  code_dim: 128
+  gaussians_per_voxel: 1
+  scale_min: 0.35
+  scale_max: 1.25
+  offset_bound: 0.5
+  initial_opacity: 0.05
+  opacity_threshold: 0.01
+  cutoff_sigma: 3.0
+  query_chunk_size: 512
+  gaussian_chunk_size: 512
+
+hydra:
+  run:
+    dir: ./${output_dir}

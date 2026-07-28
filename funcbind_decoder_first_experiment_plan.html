@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FuncBind Decoder-First Experiment Plan</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a2e;
+      --text: #edf2ff;
+      --muted: #aeb9d6;
+      --accent: #8fb3ff;
+      --accent2: #a7f3d0;
+      --border: #2b385b;
+      --code: #09101f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    main {
+      width: min(900px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 64px;
+    }
+    header, section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 18px;
+    }
+    h1, h2 { line-height: 1.25; }
+    h1 { margin: 0 0 10px; font-size: 2.25rem; }
+    h2 { margin-top: 0; color: var(--accent); }
+    p, li { color: var(--text); }
+    .muted { color: var(--muted); }
+    pre {
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    .callout {
+      border-left: 4px solid var(--accent2);
+      padding: 12px 14px;
+      background: rgba(167, 243, 208, .08);
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>FuncBind Decoder-First Experiment Plan</h1>
+    <p class="muted">
+      Macrocyclic peptide experiments with channel-wise Gaussian splatting.
+    </p>
+  </header>
+
+  <section>
+    <h2>Core Question</h2>
+    <p>
+      Before modifying latent diffusion, determine whether replacing the FuncBind
+      decoder changes reconstruction quality, atom recovery, or decoding efficiency.
+    </p>
+  </section>
+
+  <section>
+    <h2>Only Architectural Change</h2>
+    <pre><code>Keep unchanged:
+- dataset and splits
+- occupancy targets
+- encoder
+- latent representation
+- training protocol
+
+Replace:
+INR decoder
+    with
+channel-wise Gaussian splat decoder</code></pre>
+
+    <p>
+      Each atom-type channel—C, N, O, S, F, Cl, P, and Br—predicts and splats its
+      own Gaussian set. Gaussians are density bases, not atom tokens, so multiple
+      Gaussians may represent one atom.
+    </p>
+  </section>
+
+  <section>
+    <h2>Experiment 1: Decoder Ablation</h2>
+    <p>Train only the reconstruction model:</p>
+
+    <pre><code>ground-truth occupancy
+    -> existing FuncBind encoder
+    -> latent grid
+    -> decoder
+    -> reconstructed occupancy</code></pre>
+
+    <p>Compare:</p>
+    <ul>
+      <li>Official FuncBind INR decoder</li>
+      <li>Channel-wise isotropic Gaussian decoder</li>
+    </ul>
+
+    <p>Measure:</p>
+    <ul>
+      <li>channel-wise density reconstruction</li>
+      <li>atom recovery and coordinate RMSD after peak extraction</li>
+      <li>element-type accuracy</li>
+      <li>decoder runtime and memory</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Experiment 2: Density Conditioning</h2>
+    <p>
+      After the decoder comparison is stable, test whether experimental density
+      provides additional benefit.
+    </p>
+
+    <pre><code>Baseline:
+atomic structure input -> encoder -> decoder
+
+Density-aware:
+atomic structure input
++ experimental density input
+    -> fused encoder representation
+    -> same decoder</code></pre>
+
+    <p>
+      BoxBind already provides evidence that density information can help.
+      This experiment tests whether the benefit transfers to FuncBind-style
+      macrocyclic peptide reconstruction.
+    </p>
+  </section>
+
+  <section>
+    <h2>Decision Gate Before Diffusion</h2>
+    <div class="callout">
+      Integrate with latent diffusion only if the new decoder reconstructs the
+      target field reliably and/or density conditioning shows a measurable gain.
+    </div>
+
+    <pre><code>Decoder effect?
+    no -> stop or redesign decoder
+    yes
+      |
+Density benefit?
+    no -> proceed only with decoder contribution
+    yes -> proceed with density-aware model
+      |
+Integrate and retrain latent diffusion</code></pre>
+  </section>
+
+  <section>
+    <h2>Recommended MVP</h2>
+    <ul>
+      <li>Use the public macrocyclic peptide benchmark.</li>
+      <li>Freeze all design choices except the decoder.</li>
+      <li>Start with K isotropic Gaussians per latent voxel per channel.</li>
+      <li>Use bounded center offsets, positive scales, and sigmoid opacities.</li>
+      <li>Reuse the existing occupancy target and atom-extraction pipeline.</li>
+      <li>Run a single-sample overfit test before dataset-scale training.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Codex Scope</h2>
+    <ul>
+      <li>Add <code>ChannelWiseGaussianSplatDecoder3D</code>.</li>
+      <li>Keep the existing decoder available as the baseline.</li>
+      <li>Add a differentiable, chunked 3D Gaussian renderer.</li>
+      <li>Add config switches for decoder type, K, scale bounds, and opacity threshold.</li>
+      <li>Add reconstruction, atom-recovery, speed, and memory comparisons.</li>
+      <li>Do not modify or retrain diffusion in the first milestone.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

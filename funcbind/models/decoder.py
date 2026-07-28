@@ -62,6 +62,14 @@ class Decoder(nn.Module):
             input_scale=input_scale,
         )
 
+    @property
+    def decoder_type(self) -> str:
+        return "inr"
+
+    @property
+    def requires_full_latent_grid(self) -> bool:
+        return False
+
     def _transform_coords_to_per_patch(self, xs: torch.Tensor) -> torch.Tensor:
         """
         Transform coordinates from global [-1, 1] to per-patch [-1, 1].

@@ -54,26 +54,66 @@ def create_nf_encoder(config, fabric):
 
 
 def create_nf_decoder(config, fabric):
-    fabric.print(">> creating nf decoder...")
+    decoder_type = config["decoder"].get("type", "inr")
+    fabric.print(f">> creating nf decoder ({decoder_type})...")
     num_channels = get_num_channels(config)
     if "latent_grid_dim" in config["dset"]:
         n = 2 * sum(config["encoder"].get("downsample_map", [False, False, False]))
         latent_grid_dim = config["dset"]["latent_grid_dim"] // n if n > 0 else config["dset"]["latent_grid_dim"]
     else:
         latent_grid_dim = 16
-    dec = Decoder(
-        n_channels=num_channels,
-        grid_dim=config["dset"]["grid_dim"],
-        hidden_dim=config["decoder"]["hidden_dim"],
-        code_dim=config["decoder"]["code_dim"],
-        coord_dim=config["decoder"]["coord_dim"],
-        n_layers=config["decoder"]["n_layers"],
-        input_scale=config["decoder"]["input_scale"],
-        fabric=fabric,
-        resolution=config["dset"]["resolution"],
-        per_patch_coord=config["dset"].get("per_patch_coord", False),
-        latent_grid_dim=latent_grid_dim,
-    )
+    if decoder_type == "inr":
+        dec = Decoder(
+            n_channels=num_channels,
+            grid_dim=config["dset"]["grid_dim"],
+            hidden_dim=config["decoder"]["hidden_dim"],
+            code_dim=config["decoder"]["code_dim"],
+            coord_dim=config["decoder"]["coord_dim"],
+            n_layers=config["decoder"]["n_layers"],
+            input_scale=config["decoder"]["input_scale"],
+            fabric=fabric,
+            resolution=config["dset"]["resolution"],
+            per_patch_coord=config["dset"].get("per_patch_coord", False),
+            latent_grid_dim=latent_grid_dim,
+        )
+    elif decoder_type == "gaussian_splat":
+        from funcbind.models.gaussian_splat_decoder import (
+            ChannelWiseGaussianSplatDecoder3D,
+        )
+
+        dec = ChannelWiseGaussianSplatDecoder3D(
+            n_channels=num_channels,
+            code_dim=config["decoder"]["code_dim"],
+            grid_dim=config["dset"]["grid_dim"],
+            latent_grid_dim=latent_grid_dim,
+            hidden_dim=config["decoder"].get("hidden_dim", 512),
+            gaussians_per_voxel=config["decoder"].get(
+                "gaussians_per_voxel", 1
+            ),
+            scale_min=config["decoder"].get("scale_min", 0.35),
+            scale_max=config["decoder"].get("scale_max", 1.25),
+            offset_bound=config["decoder"].get("offset_bound", 0.5),
+            opacity_threshold=config["decoder"].get(
+                "opacity_threshold", 0.01
+            ),
+            initial_opacity=config["decoder"].get(
+                "initial_opacity", 0.05
+            ),
+            cutoff_sigma=config["decoder"].get("cutoff_sigma", 3.0),
+            query_chunk_size=config["decoder"].get(
+                "query_chunk_size", 512
+            ),
+            gaussian_chunk_size=config["decoder"].get(
+                "gaussian_chunk_size", 512
+            ),
+            fabric=fabric,
+            resolution=config["dset"]["resolution"],
+        )
+    else:
+        raise ValueError(
+            f"Unknown decoder type {decoder_type!r}; expected 'inr' or "
+            "'gaussian_splat'"
+        )
     n_params_dec = sum(p.numel() for p in dec.parameters() if p.requires_grad)
     fabric.print(f">> dec has {(n_params_dec/1e6):.02f}M parameters")
     return dec
@@ -121,8 +161,11 @@ def create_neural_field(config, fabric):
         fabric.print(">> encoder compiled")
 
     dec = create_nf_decoder(config, fabric)
-    dec = torch.compile(dec)
-    fabric.print(">> decoder compiled")
+    if config["decoder"].get("compile", True):
+        dec = torch.compile(dec)
+        fabric.print(">> decoder compiled")
+    else:
+        fabric.print(">> decoder compilation disabled")
 
     return enc, dec
 
@@ -151,7 +194,8 @@ def load_neural_field(nf_checkpoint, fabric, config = None, input = None, setup_
     except KeyError as e:
         fabric.print(f">> Loading error dec: {e}.")
 
-    dec = torch.compile(dec)
+    if config["decoder"].get("compile", True):
+        dec = torch.compile(dec)
     dec.eval()
 
     enc = create_nf_encoder(config, fabric)
@@ -175,7 +219,9 @@ def infer_codes_batch(batch, enc, field_maker, config, xs = None, code_stats = N
     reg_weight = "reg_weight" in config and config["reg_weight"] != 0.0
 
     posteriors = None
-    if xs is not None:
+    decoder_type = config["decoder"].get("type", "inr")
+    requires_full_latent_grid = decoder_type == "gaussian_splat"
+    if xs is not None and not requires_full_latent_grid:
         codes = get_code_spatial(xs, codes)
     if reg_weight:
         codes, posteriors = sample_posterior(codes, save_log_var=save_log_var, deterministic=deterministic)

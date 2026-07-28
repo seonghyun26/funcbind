@@ -1,0 +1,67 @@
+defaults:
+  - dset: omni
+  - encoder: cnn
+  - decoder: decoder
+  - override hydra/job_logging: custom
+  - _self_
+
+seed: 1234
+wandb: false
+n_devs: 1
+variant: inr
+exp_name: "frozen_encoder_${variant}_${now:%Y%m%d}_${now:%H%M%S}"
+output_dir: "exps/decoder_ablation/${exp_name}"
+dirname: ${output_dir}
+
+pretrained_encoder_checkpoint: "exps/neural_field/nf_unified/model.pt"
+split: test
+resume: true
+epochs: 25
+save_every_epochs: 5
+lr_decoder: 1e-4
+gradient_clip_norm: 1.0
+timing_warmup_steps: 10
+evaluation_query_chunk_size: 4096
+atom_match_distance: 1.0
+
+# Keep the pretrained variational encoder topology (256 moment channels);
+# deterministic posterior means provide the shared 128-channel latent grid.
+reg_weight: 1e-5
+
+dset:
+  use_single_dataset: mcpp
+  data_aug: false
+  rebalance: false
+  batch_size: 1
+  num_workers: 0
+  n_points: 4096
+  targeted_sampling_ratio: 2
+  cubes_around: 40
+
+inr_decoder:
+  type: inr
+  compile: false
+  hidden_dim: 3072
+  code_dim: 128
+  coord_dim: 3
+  n_layers: 6
+  input_scale: 64
+
+gaussian_splat_decoder:
+  type: gaussian_splat
+  compile: false
+  hidden_dim: 512
+  code_dim: 128
+  gaussians_per_voxel: 1
+  scale_min: 0.35
+  scale_max: 1.25
+  offset_bound: 0.5
+  initial_opacity: 0.05
+  opacity_threshold: 0.01
+  cutoff_sigma: 3.0
+  query_chunk_size: 512
+  gaussian_chunk_size: 512
+
+hydra:
+  run:
+    dir: ./${output_dir}

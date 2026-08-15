@@ -87,6 +87,9 @@ def create_nf_decoder(config, fabric):
             grid_dim=config["dset"]["grid_dim"],
             latent_grid_dim=latent_grid_dim,
             hidden_dim=config["decoder"].get("hidden_dim", 512),
+            n_layers=config["decoder"].get("n_layers", 2),
+            kernel_size=config["decoder"].get("kernel_size", 1),
+            norm_groups=config["decoder"].get("norm_groups", 0),
             gaussians_per_voxel=config["decoder"].get(
                 "gaussians_per_voxel", 1
             ),
@@ -419,6 +422,21 @@ def update_config_nf(config_nf, config):
     config_nf["dset"]["cdrs"] = config["dset"].get("cdrs", ["H3"])
     config_nf["dset"]["cdrs_aug"] = config["dset"].get("cdrs_aug", [])
     config_nf["dset"]["data_aug"] = config["dset"].get("data_aug", True)
+    for key in (
+        # The neural-field checkpoint carries the relative "dataset/data" of the box it
+        # was trained on, so without this the run's own dset.data_dir is silently ignored
+        # and the loaders resolve against the current working directory instead.
+        "data_dir",
+        "num_workers",
+        "persistent_workers",
+        "prefetch_factor",
+        "datasets",
+        "density_crops_dir",
+        "mcpp_holo_density_dir",
+        "voxbind_python_root",
+    ):
+        if key in config["dset"]:
+            config_nf["dset"][key] = config["dset"][key]
     return config_nf
 
 

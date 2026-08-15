@@ -80,7 +80,11 @@ def load_funcbind(
         with torch.no_grad():
             assert "ema_stds" in config and config["ema_stds"] is not None and (len(config["ema_stds"]) > 0 and config["ema_stds"][0] != 0.0), "ema_stds must be set and non-empty"
             fabric.print(">> using PowerFunctionEMA with stds", config["ema_stds"])
-            model_ema = PowerFunctionEMA(model, stds=config["ema_stds"])
+            model_ema = PowerFunctionEMA(
+                model,
+                stds=config["ema_stds"],
+                foreach=bool(config.get("performance", {}).get("ema_foreach", True)),
+            )
             if load_ema:
                 load_unet(checkpoint, model_ema.emas[0], fabric, sd="state_dict_ema")
             fabric.print(">> loaded model_ema")
@@ -190,21 +194,40 @@ def load_unet(
 
 
 def create_optimizer(funcbind, config, fabric):
+    optimizer_foreach = bool(
+        config.get("performance", {}).get("optimizer_foreach", True)
+    )
     if config["wd"] >= 0:
-        fabric.print(f">> using AdamW with weight decay {config['wd']}")
+        fabric.print(
+            f">> using AdamW with weight decay {config['wd']} "
+            f"(foreach={optimizer_foreach})"
+        )
         optimizer = AdamW(
             funcbind.parameters(),
             lr=config["lr"],
             weight_decay=config["wd"],
             betas=(0.9, config["dset"]["beta2"]),
+            foreach=optimizer_foreach,
         )
     else:
-        fabric.print(">> using Adam")
+        fabric.print(f">> using Adam (foreach={optimizer_foreach})")
         optimizer = torch.optim.Adam(
-            funcbind.parameters(), lr=config["lr"], betas=(0.9, config["dset"]["beta2"])
+            funcbind.parameters(),
+            lr=config["lr"],
+            betas=(0.9, config["dset"]["beta2"]),
+            foreach=optimizer_foreach,
         )
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     return optimizer
+
+
+def configure_optimizer_runtime(optimizer, config):
+    """Reapply the runtime foreach policy after loading an older checkpoint."""
+    optimizer_foreach = bool(
+        config.get("performance", {}).get("optimizer_foreach", True)
+    )
+    for param_group in optimizer.param_groups:
+        param_group["foreach"] = optimizer_foreach
 
 
 def num_classes_funcbind(config):
@@ -216,7 +239,8 @@ def num_classes_funcbind(config):
 
 
 def create_field_makers(config, config_nf, fabric):
-    field_maker = FieldMaker(config_nf, sample_points=False)
+    fixed_box = bool(config.get("performance", {}).get("fixed_voxel_box", True))
+    field_maker = FieldMaker(config_nf, sample_points=False, fixed_box=fixed_box)
     field_maker = field_maker.to(fabric.device)
 
     # Determine downsample map based on denoiser configuration
@@ -230,7 +254,11 @@ def create_field_makers(config, config_nf, fabric):
         config_receptor = copy.deepcopy(config_nf)
         config_receptor["dset"]["latent_grid_dim"] = (config_nf["dset"]["latent_grid_dim"] * downsampling_factor)
         config_receptor["dset"]["latent_resolution"] = (config_nf["dset"]["latent_resolution"] / downsampling_factor)
-        field_maker_receptor = FieldMaker(config_receptor, sample_points=False).to(fabric.device)
+        field_maker_receptor = FieldMaker(
+            config_receptor, sample_points=False, fixed_box=fixed_box
+        ).to(fabric.device)
     else:
-        field_maker_receptor = FieldMaker(config_nf, sample_points=False).to(fabric.device)
+        field_maker_receptor = FieldMaker(
+            config_nf, sample_points=False, fixed_box=fixed_box
+        ).to(fabric.device)
     return field_maker, field_maker_receptor

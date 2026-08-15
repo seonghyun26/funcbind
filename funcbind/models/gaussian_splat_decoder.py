@@ -155,6 +155,9 @@ class ChannelWiseGaussianSplatDecoder3D(Decoder):
         latent_grid_dim: int,
         *,
         hidden_dim: int = 512,
+        n_layers: int = 2,
+        kernel_size: int = 1,
+        norm_groups: int = 0,
         gaussians_per_voxel: int = 1,
         scale_min: float = 0.35,
         scale_max: float = 1.25,
@@ -174,6 +177,14 @@ class ChannelWiseGaussianSplatDecoder3D(Decoder):
             raise ValueError("n_channels and code_dim must be positive")
         if gaussians_per_voxel <= 0:
             raise ValueError("gaussians_per_voxel must be positive")
+        if n_layers < 2:
+            raise ValueError("n_layers must be at least 2 (one hidden, one output)")
+        if kernel_size < 1 or kernel_size % 2 == 0:
+            raise ValueError("kernel_size must be a positive odd integer")
+        if norm_groups < 0:
+            raise ValueError("norm_groups must be non-negative (0 disables norm)")
+        if norm_groups and hidden_dim % norm_groups != 0:
+            raise ValueError("hidden_dim must be divisible by norm_groups")
         if not 0 < scale_min <= scale_max:
             raise ValueError("expected 0 < scale_min <= scale_max")
         if not 0 <= offset_bound <= 1:
@@ -188,6 +199,9 @@ class ChannelWiseGaussianSplatDecoder3D(Decoder):
         self.grid_dim = grid_dim
         self.latent_grid_dim = latent_grid_dim
         self.hidden_dim = hidden_dim
+        self.n_layers = int(n_layers)
+        self.kernel_size = int(kernel_size)
+        self.norm_groups = int(norm_groups)
         self.gaussians_per_voxel = gaussians_per_voxel
         self.scale_min = float(scale_min)
         self.scale_max = float(scale_max)
@@ -203,11 +217,22 @@ class ChannelWiseGaussianSplatDecoder3D(Decoder):
         self.coord_dim = 3
 
         output_channels = n_channels * gaussians_per_voxel * 5
-        self.parameter_head = nn.Sequential(
-            nn.Conv3d(code_dim, hidden_dim, kernel_size=1),
-            nn.SiLU(),
-            nn.Conv3d(hidden_dim, output_channels, kernel_size=1),
-        )
+        # Only the first layer may look at neighbouring latent voxels; the rest
+        # are 1x1x1 so widening and deepening stay cheap on the 16^3 latent grid.
+        layers: list[nn.Module] = []
+        in_dim = code_dim
+        for index in range(self.n_layers - 1):
+            k = self.kernel_size if index == 0 else 1
+            layers.append(
+                nn.Conv3d(in_dim, hidden_dim, kernel_size=k, padding=k // 2)
+            )
+            if self.norm_groups:
+                layers.append(nn.GroupNorm(self.norm_groups, hidden_dim))
+            layers.append(nn.SiLU())
+            in_dim = hidden_dim
+        layers.append(nn.Conv3d(in_dim, output_channels, kernel_size=1))
+        self.parameter_head = nn.Sequential(*layers)
+
         final = self.parameter_head[-1]
         nn.init.normal_(final.weight, mean=0.0, std=1e-3)
         nn.init.zeros_(final.bias)

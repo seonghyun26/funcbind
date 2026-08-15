@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from typing import Tuple, Optional
 import lightning as L
 from omegaconf import OmegaConf
@@ -36,12 +37,18 @@ def setup_fabric(config: dict, find_unused_parameters=False) -> L.Fabric:
     """
     logger = None
     if config["wandb"]:
+       # The POSIX user name is not a wandb entity on every box (here it is `irteam`,
+       # which wandb rejects with a 404 "entity not found" that kills rank 0 before the
+       # first step). Prefer an explicit WANDB_ENTITY, else fall back to the API key's
+       # own default entity, and only then to the local user name.
+       entity = os.environ.get("WANDB_ENTITY") or None
        logger = WandbLogger(
-           project="funcbind",
-           entity=gt.getuser(),
+           project=os.environ.get("WANDB_PROJECT") or "funcbind",
+           entity=entity,
            config=OmegaConf.to_container(config),
            name=config["exp_name"],
            dir=config["dirname"],
+           tags=list(config.get("wandb_tags", [])) or None,
        )
 
     n_devs = config.get("n_devs") if "n_devs" in config else torch.cuda.device_count()
@@ -49,9 +56,20 @@ def setup_fabric(config: dict, find_unused_parameters=False) -> L.Fabric:
 
     torch.set_default_dtype(torch.float32)
     torch.set_float32_matmul_precision("high")
-    strat_ = "ddp" if n_devs > 1 else "auto"
-    if strat_ == "ddp" and find_unused_parameters:
-        strat_ = DDPStrategy(find_unused_parameters=True)
+    strat_ = "auto"
+    if n_devs > 1:
+        performance = config.get("performance", {})
+        strat_ = DDPStrategy(
+            process_group_backend="nccl",
+            timeout=timedelta(hours=2),
+            find_unused_parameters=bool(
+                performance.get("find_unused_parameters", find_unused_parameters)
+            ),
+            gradient_as_bucket_view=bool(
+                performance.get("ddp_gradient_as_bucket_view", True)
+            ),
+            static_graph=bool(performance.get("ddp_static_graph", False)),
+        )
     if n_devs >= 1:
         fabric = L.Fabric(
             devices=n_devs, num_nodes=n_nodes, strategy=strat_, accelerator="gpu", loggers=[logger], precision="bf16-mixed"

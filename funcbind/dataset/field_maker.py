@@ -11,6 +11,7 @@ class FieldMaker(nn.Module):
         cubes_around: int = 5,
         sample_points: bool = True,
         sample_grid: bool = True,
+        fixed_box: bool = False,
     ):
         super(FieldMaker, self).__init__()
         self.grid_dim_low_res = config["dset"]["latent_grid_dim"]
@@ -26,6 +27,9 @@ class FieldMaker(nn.Module):
         self.elements = config["dset"]["elements"]
         self.laplace = False
         self.dumb = config["dset"].get("dumb", 10.0)  # default value for dumb coordinates
+        self.fixed_box_extent = (
+            self.grid_dim * self.resolution / 2 + self.dumb if fixed_box else None
+        )
         self.sample_points = sample_points
         self.sample_grid = sample_grid
 
@@ -44,8 +48,16 @@ class FieldMaker(nn.Module):
 
     @torch.no_grad()
     def compute_voxel_grid(self, batch, num_channels=None):
-        batch = self._add_dumb_coords(batch)
-        occs_grid = self.vol_maker(batch["coords"], batch["radius"] * self.radius_scale, batch["atoms_channel"], resolution=self.resolution_low_res, cubes_around_atoms_dim=self.cubes_around, numberchannels=len(self.elements) if num_channels is None else num_channels)
+        batch, box_extent = self._add_dumb_coords(batch)
+        occs_grid = self.vol_maker(
+            batch["coords"],
+            batch["radius"] * self.radius_scale,
+            batch["atoms_channel"],
+            resolution=self.resolution_low_res,
+            cubes_around_atoms_dim=self.cubes_around,
+            numberchannels=len(self.elements) if num_channels is None else num_channels,
+            fixed_box_extent=box_extent,
+        )
         # get center box (remove dumb coordinates)
         center = (occs_grid.shape[-1]) // 2 - 1
         box_min, box_max = center - self.grid_dim_low_res // 2, center + self.grid_dim_low_res // 2
@@ -100,11 +112,28 @@ class FieldMaker(nn.Module):
             batch (dict): A dictionary containing the molecular data.
 
         Returns:
-            dict: A dictionary containing the molecular data with dumb coordinates added.
+            tuple: The padded molecule dictionary and optional fixed box extent.
         """
         bsz = batch['coords'].shape[0]
-        dumb_coord = batch['coords'][batch['coords'] != torch.tensor(PADDING_INDEX, dtype=batch['coords'].dtype)].abs().max() + self.dumb
-        dumb_coord_repeat = dumb_coord.repeat(bsz, 1, 3)
+        box_extent = None
+        if self.fixed_box_extent is None:
+            valid = batch['coords'] != torch.tensor(
+                PADDING_INDEX, dtype=batch['coords'].dtype, device=batch['coords'].device
+            )
+            dumb_coord = batch['coords'][valid].abs().max() + self.dumb
+            dumb_coord_repeat = dumb_coord.repeat(bsz, 1, 3)
+        else:
+            box_extent = (
+                float(batch["max_abs_coord"]) + self.dumb
+                if "max_abs_coord" in batch
+                else self.fixed_box_extent
+            )
+            dumb_coord_repeat = torch.full(
+                (bsz, 1, 3),
+                box_extent,
+                dtype=batch['coords'].dtype,
+                device=batch['coords'].device,
+            )
         return {
             "coords": torch.cat((batch['coords'], -dumb_coord_repeat, dumb_coord_repeat), 1),
             "atoms_channel": torch.cat(
@@ -113,7 +142,7 @@ class FieldMaker(nn.Module):
             "radius": torch.cat(
                 (batch['radius'], torch.full((bsz, 2), .5, dtype=batch['radius'].dtype, device=batch['radius'].device), ), 1
             )
-        }
+        }, box_extent
 
     def set_sample_points(self, sample_points: bool):
         self.sample_points = sample_points
@@ -153,7 +182,16 @@ class Voxels(torch.nn.Module):
         self.translation = (mincoords-(cubes_around_atoms_dim)).unsqueeze(1)
         self.dilatation = 1.0 / resolution
 
-    def forward(self, coords, radius, channels, numberchannels=None, resolution=1, cubes_around_atoms_dim=5):
+    def forward(
+        self,
+        coords,
+        radius,
+        channels,
+        numberchannels=None,
+        resolution=1,
+        cubes_around_atoms_dim=5,
+        fixed_box_extent=None,
+    ):
         channels_int = channels.to(torch.int16)
         padding_mask = channels_int.ne(PADDING_INDEX)
         if numberchannels is None:
@@ -180,16 +218,23 @@ class Voxels(torch.nn.Module):
 
         self.standard_cube = torch.cat([xy, x3], dim=-1).unsqueeze(0).unsqueeze(0)
 
-        mincoords = torch.min(coords[:, :, :], dim=1)[0]
-        mincoords = torch.trunc(mincoords / resolution)
-        box_size_x = (math.ceil(torch.max(coords[padding_mask][:,0])/resolution)-mincoords[:,0].min())+(2*cubes_around_atoms_dim+1)
-        box_size_y = (math.ceil(torch.max(coords[padding_mask][:,1])/resolution)-mincoords[:,1].min())+(2*cubes_around_atoms_dim+1)
-        box_size_z = (math.ceil(torch.max(coords[padding_mask][:,2])/resolution)-mincoords[:,2].min())+(2*cubes_around_atoms_dim+1)
+        if fixed_box_extent is None:
+            mincoords = torch.min(coords[:, :, :], dim=1)[0]
+            mincoords = torch.trunc(mincoords / resolution)
+            box_size_x = (math.ceil(torch.max(coords[padding_mask][:,0])/resolution)-mincoords[:,0].min())+(2*cubes_around_atoms_dim+1)
+            box_size_y = (math.ceil(torch.max(coords[padding_mask][:,1])/resolution)-mincoords[:,1].min())+(2*cubes_around_atoms_dim+1)
+            box_size_z = (math.ceil(torch.max(coords[padding_mask][:,2])/resolution)-mincoords[:,2].min())+(2*cubes_around_atoms_dim+1)
+            boxsize = (int(box_size_x),int(box_size_y),int(box_size_z))
+        else:
+            min_coord = math.trunc(-fixed_box_extent / resolution)
+            max_coord = math.ceil(fixed_box_extent / resolution)
+            mincoords = coords.new_full((coords.shape[0], 3), min_coord)
+            box_side = max_coord - min_coord + (2 * cubes_around_atoms_dim + 1)
+            boxsize = (box_side, box_side, box_side)
 
         self._define_spatial_conformation(mincoords,cubes_around_atoms_dim,resolution)	#define the spatial transforms to coordinates
         coords,radius = self._transform_coordinates(coords,radius)
 
-        boxsize = (int(box_size_x),int(box_size_y),int(box_size_z))
         self.boxsize=boxsize
 
         if max(boxsize)<256:

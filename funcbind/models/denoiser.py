@@ -52,6 +52,42 @@ class FuncBind(torch.nn.Module):
             class_dim=self.class_dim
         )
 
+        # ---- frozen CDG density conditioning (zero-init, off by default) ----------
+        # Mirrors VoxBind's `protein_first`: the frozen encoder feeds the RECEPTOR
+        # representation only, through a zero conv, so step 0 == the density-free model.
+        dcfg = config["denoiser"].get("density", None)
+        self.with_density = bool(config["denoiser"].get("with_density", False))
+        self.density_condition = None
+        if self.with_density:
+            if dcfg is None:
+                raise ValueError("denoiser.with_density=true requires a denoiser.density block")
+            from funcbind.models.density_condition import DensityCondition
+            fabric.print(f">> density conditioning ON — frozen encoder {dcfg['pretrained_path']}")
+            self.density_condition = DensityCondition(
+                density_cfg=dcfg,
+                code_dim=self.code_dim,
+                code_grid_dim=self.code_grid_dim,
+                voxbind_root=dcfg["voxbind_python_root"],
+                hidden=int(dcfg.get("proj_hidden", 192)),
+                freeze=bool(dcfg.get("freeze", True)),
+                amp=bool(dcfg.get("encoder_amp", True)),
+                # Physical extent of the receptor latent box (128 * 0.25 = 32 A), so the
+                # 16 A density crop lands on the latent cells it actually covers instead
+                # of being stretched over the whole box.
+                latent_extent=(config["dset"]["grid_dim"] * config["dset"]["resolution"]
+                               if dcfg.get("spatial_align", True) else None),
+            )
+            n_frozen = sum(p.numel() for p in self.density_condition.encoder.parameters())
+            n_train = sum(p.numel() for p in self.density_condition.proj.parameters())
+            fabric.print(f">> density encoder frozen ({n_frozen:,} params), "
+                         f"zero-init proj ({n_train:,} trainable)")
+            if self.density_condition.latent_extent is not None:
+                n_cells = self.density_condition._n_latent_cells()
+                fabric.print(f">> density registered on the central {n_cells}^3 of the "
+                             f"{self.code_grid_dim}^3 receptor latent "
+                             f"({self.density_condition.density_extent:.1f} A of "
+                             f"{self.density_condition.latent_extent:.1f} A)")
+
         # preconditioning attributes
         # https://github.com/NVlabs/edm2/blob/main/training/networks_edm2.py#L285
         self.sigma_data = 1.  # since we normalize the codes
@@ -59,6 +95,21 @@ class FuncBind(torch.nn.Module):
         if config["sampler"]["_target_"] != "funcbind.sampling.SingleMeasurementSampler":
             self.logvar_fourier = MPFourier(logvar_channels)
             self.logvar_linear = MPConv(logvar_channels, 1, kernel=[])
+
+    def fuse_density_condition(
+        self,
+        receptor_encoding: torch.Tensor,
+        density_input: torch.Tensor = None,
+        density_available: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """Add the masked density residual, preserving an exact baseline no-op."""
+        if self.density_condition is None or density_input is None:
+            return receptor_encoding
+        from funcbind.models.density_condition import apply_density_residual
+        delta = self.density_condition(density_input)
+        return apply_density_residual(
+            receptor_encoding, delta, density_available
+        )
 
     def forward(
         self,
@@ -69,11 +120,20 @@ class FuncBind(torch.nn.Module):
         return_logvar=False,
         preconditioning=True,
         classes=None,
-        cfg_dropout=True
+        cfg_dropout=True,
+        density_input: torch.Tensor = None,
+        density_available: torch.Tensor = None,
     ) -> torch.Tensor:
         assert receptor_encoding is not None or receptor is not None, "Either receptor_encoding or receptor must be provided"
         if receptor_encoding is None:
             receptor_encoding = self.receptor_encoder(receptor) if self.receptor_encoder is not None else receptor
+
+        # Zero-init residual: identity at step 0, so enabling density cannot regress the
+        # baseline at initialisation. The availability mask keeps missing-map examples
+        # exactly on the density-free path even after the projection learns a bias.
+        receptor_encoding = self.fuse_density_condition(
+            receptor_encoding, density_input, density_available
+        )
 
         classes = None if self.class_dim == 0 else torch.zeros([1, self.class_dim], device=self.device) if classes is None else classes.to(torch.float32).reshape(-1, self.class_dim)
 
@@ -105,12 +165,16 @@ class FuncBind(torch.nn.Module):
         sigma: torch.Tensor,
         receptor: torch.Tensor = None,
         receptor_encoding: torch.Tensor = None,
+        density_input: torch.Tensor = None,
+        density_available: torch.Tensor = None,
     ) -> torch.Tensor:
         assert receptor_encoding is not None or receptor is not None, "Either receptor_encoding or receptor must be provided"
         if receptor_encoding is None:
             receptor_encoding = self.receptor_encoder(receptor) if self.receptor_encoder is not None else receptor
 
-        xhat = self.forward(y, receptor_encoding=receptor_encoding, sigma=sigma)
+        xhat = self.forward(y, receptor_encoding=receptor_encoding, sigma=sigma,
+                            density_input=density_input,
+                            density_available=density_available)
         sigma = sigma.view(-1, 1, 1, 1, 1)
         score = (xhat - y) / (sigma ** 2)
         return score

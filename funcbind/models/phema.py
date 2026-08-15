@@ -68,12 +68,23 @@ def power_function_beta(std, t_next, t_delta):
 
 class PowerFunctionEMA(nn.Module):
     @torch.no_grad()
-    def __init__(self, net, stds=[0.100]):
+    def __init__(self, net, stds=[0.100], foreach=True):
         super(PowerFunctionEMA, self).__init__()
         self.net = net
         self.stds = stds
+        self.foreach = foreach
         self.emas = [copy.deepcopy(net) for _std in stds]
         self.to(net.device)
+
+    @staticmethod
+    def _parameter_buckets(net, ema):
+        buckets = {}
+        for p_net, p_ema in zip(net.parameters(), ema.parameters()):
+            key = (p_ema.device, p_ema.dtype)
+            net_params, ema_params = buckets.setdefault(key, ([], []))
+            net_params.append(p_net)
+            ema_params.append(p_ema)
+        return buckets.values()
 
     @torch.no_grad()
     def to(self, device):
@@ -83,15 +94,23 @@ class PowerFunctionEMA(nn.Module):
     @torch.no_grad()
     def reset(self):
         for ema in self.emas:
-            for p_net, p_ema in zip(self.net.parameters(), ema.parameters()):
-                p_ema.copy_(p_net)
+            if self.foreach:
+                for net_params, ema_params in self._parameter_buckets(self.net, ema):
+                    torch._foreach_copy_(ema_params, net_params)
+            else:
+                for p_net, p_ema in zip(self.net.parameters(), ema.parameters()):
+                    p_ema.copy_(p_net)
 
     @torch.no_grad()
     def update(self, cur_nimg, batch_size):
         for std, ema in zip(self.stds, self.emas):
             beta = power_function_beta(std=std, t_next=cur_nimg, t_delta=batch_size)
-            for p_net, p_ema in zip(self.net.parameters(), ema.parameters()):
-                p_ema.lerp_(p_net, 1 - beta)
+            if self.foreach:
+                for net_params, ema_params in self._parameter_buckets(self.net, ema):
+                    torch._foreach_lerp_(ema_params, net_params, 1 - beta)
+            else:
+                for p_net, p_ema in zip(self.net.parameters(), ema.parameters()):
+                    p_ema.lerp_(p_net, 1 - beta)
 
     @torch.no_grad()
     def get(self):

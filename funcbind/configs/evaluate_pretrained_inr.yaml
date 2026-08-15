@@ -1,0 +1,20 @@
+seed: 1234
+wandb: false
+n_devs: 1
+exp_name: original_pretrained_inr_target0
+output_dir: exps/decoder_ablation/original_pretrained_inr_mcpp_target0_20260728
+dirname: ${output_dir}
+
+pretrained_checkpoint: exps/neural_field/nf_unified/model.pt
+data_dir: funcbind/dataset/data
+dataset: mcpp
+split: test
+sample_index: 0
+posterior_modes: [sample, mean]
+evaluation_query_chunk_size: 8192
+atom_match_distance: 1.0
+occupancy_point_threshold: 0.1
+
+hydra:
+  run:
+    dir: ./${output_dir}

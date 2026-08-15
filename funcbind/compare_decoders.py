@@ -26,6 +26,7 @@ from scipy.optimize import linear_sum_assignment
 from funcbind.dataset.dataset_omni import DatasetOmni, collate_fn
 from funcbind.dataset.field_maker import FieldMaker
 from funcbind.models.decoder import get_atom_coords_batched, get_code_spatial
+from funcbind.models.encoder import sample_posterior
 from funcbind.utils.constants import PADDING_INDEX
 from funcbind.utils.utils_base import setup_fabric
 from funcbind.utils.utils_nf import create_nf_decoder, create_nf_encoder
@@ -223,8 +224,16 @@ def _forward(
     voxels: torch.Tensor,
     query_points: torch.Tensor,
     decoder_type: str,
+    deterministic_posterior: bool = False,
 ) -> torch.Tensor:
     latent_grid = encoder(voxels)
+    if deterministic_posterior:
+        latent_grid, _ = sample_posterior(
+            latent_grid,
+            sample_posterior=False,
+            save_log_var=False,
+            deterministic=True,
+        )
     codes = (
         latent_grid
         if decoder_type == "gaussian_splat"
@@ -242,10 +251,18 @@ def _render_full_grid(
     *,
     decoder_type: str,
     query_chunk_size: int,
+    deterministic_posterior: bool = False,
 ) -> torch.Tensor:
     encoder.eval()
     decoder.eval()
     latent_grid = encoder(voxels)
+    if deterministic_posterior:
+        latent_grid, _ = sample_posterior(
+            latent_grid,
+            sample_posterior=False,
+            save_log_var=False,
+            deterministic=True,
+        )
     predictions = []
     for query_chunk in query_points.split(query_chunk_size, dim=1):
         codes = (
@@ -291,6 +308,9 @@ def _train_variant(
     decoder_parameters = _parameter_count(decoder)
 
     train_encoder = bool(config.train_encoder)
+    deterministic_posterior = bool(
+        config.get("deterministic_posterior", False)
+    )
     if not train_encoder:
         for parameter in encoder.parameters():
             parameter.requires_grad_(False)
@@ -310,6 +330,8 @@ def _train_variant(
 
     field_maker = FieldMaker(variant_config).to(fabric.device)
     query_points = batch["ligand"]["xs"]
+    encoder.train(train_encoder)
+    decoder.train()
     with torch.no_grad():
         voxels = field_maker.compute_voxel_grid(
             batch["ligand"], num_channels=variant_config.dset.n_channels
@@ -318,7 +340,12 @@ def _train_variant(
             batch["ligand"], num_channels=variant_config.dset.n_channels
         )
         initial_prediction = _forward(
-            encoder, decoder, voxels, query_points, decoder_type
+            encoder,
+            decoder,
+            voxels,
+            query_points,
+            decoder_type,
+            deterministic_posterior,
         )
     initial_metrics = reconstruction_metrics(initial_prediction, target)
 
@@ -337,8 +364,6 @@ def _train_variant(
     step_times = []
     steps = int(config.steps)
     report_every = max(int(config.report_every), 1)
-    encoder.train(train_encoder)
-    decoder.train()
     for step in range(1, steps + 1):
         optimizer_decoder.zero_grad()
         if optimizer_encoder is not None:
@@ -346,7 +371,12 @@ def _train_variant(
         _synchronize(fabric.device)
         started = time.perf_counter()
         prediction = _forward(
-            encoder, decoder, voxels, query_points, decoder_type
+            encoder,
+            decoder,
+            voxels,
+            query_points,
+            decoder_type,
+            deterministic_posterior,
         )
         loss = torch.nn.functional.mse_loss(prediction, target)
         fabric.backward(loss)
@@ -367,7 +397,12 @@ def _train_variant(
         if step % report_every == 0 or step == steps:
             with torch.no_grad():
                 prediction = _forward(
-                    encoder, decoder, voxels, query_points, decoder_type
+                    encoder,
+                    decoder,
+                    voxels,
+                    query_points,
+                    decoder_type,
+                    deterministic_posterior,
                 )
             metrics = reconstruction_metrics(prediction, target)
             history.append({"step": step, **metrics})
@@ -412,6 +447,7 @@ def _train_variant(
                 full_query_points,
                 decoder_type=decoder_type,
                 query_chunk_size=int(config.evaluation_query_chunk_size),
+                deterministic_posterior=deterministic_posterior,
             )
         grid_dim = int(variant_config.dset.grid_dim)
         prediction_grid = full_prediction.permute(0, 2, 1).reshape(
@@ -535,10 +571,28 @@ def _comparison(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
 def main(config: DictConfig) -> None:
     if config.inr_decoder.code_dim != config.gaussian_splat_decoder.code_dim:
         raise ValueError("Both decoders must use the same code_dim")
-    if config.reg_weight != 0:
+    checkpoint_value = config.get("pretrained_encoder_checkpoint")
+    checkpoint_path = (
+        Path(str(checkpoint_value)).expanduser().resolve()
+        if checkpoint_value
+        else None
+    )
+    if checkpoint_path is None and config.reg_weight != 0:
         raise ValueError(
-            "The controlled overfit comparison currently requires reg_weight=0"
+            "A randomly initialized controlled comparison requires reg_weight=0"
         )
+    if checkpoint_path is not None:
+        if bool(config.train_encoder):
+            raise ValueError(
+                "A pretrained encoder comparison requires train_encoder=false"
+            )
+        if config.reg_weight == 0:
+            raise ValueError(
+                "The unified pretrained encoder requires a nonzero reg_weight"
+            )
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(checkpoint_path)
+        config.deterministic_posterior = True
 
     output_dir = Path(config.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -551,14 +605,35 @@ def main(config: DictConfig) -> None:
         else None
     )
 
-    base_config = _decoder_config(config, "inr")
-    fabric.seed_everything(int(config.seed))
-    initial_encoder = create_nf_encoder(base_config, fabric)
-    initial_encoder_state = {
-        key: value.detach().cpu().clone()
-        for key, value in initial_encoder.state_dict().items()
-    }
-    del initial_encoder
+    if checkpoint_path is not None:
+        checkpoint = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=False
+        )
+        initial_encoder_state = checkpoint.get("enc_state_dict")
+        if initial_encoder_state is None:
+            raise KeyError(f"{checkpoint_path} has no enc_state_dict")
+        del checkpoint
+        encoder_source = {
+            "kind": "pretrained",
+            "checkpoint": str(checkpoint_path),
+            "frozen": True,
+            "latent": "deterministic posterior mean",
+        }
+    else:
+        base_config = _decoder_config(config, "inr")
+        fabric.seed_everything(int(config.seed))
+        initial_encoder = create_nf_encoder(base_config, fabric)
+        initial_encoder_state = {
+            key: value.detach().cpu().clone()
+            for key, value in initial_encoder.state_dict().items()
+        }
+        del initial_encoder
+        encoder_source = {
+            "kind": "random initialization",
+            "checkpoint": None,
+            "frozen": not bool(config.train_encoder),
+            "latent": "direct encoder output",
+        }
 
     results = {}
     for name in ("inr", "gaussian_splat"):
@@ -575,6 +650,7 @@ def main(config: DictConfig) -> None:
             "status": "running" if len(results) == 1 else "complete",
             "sample_index": int(config.sample_index),
             "split": str(config.split),
+            "encoder": encoder_source,
             "results": results,
         }
         if len(results) == 2:

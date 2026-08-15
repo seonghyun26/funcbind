@@ -1,0 +1,54 @@
+seed: 1234
+wandb: false
+n_devs: 1
+exp_name: gaussian_max_overfit_mcpp_target0
+output_dir: exps/decoder_ablation/gaussian_max_overfit_mcpp_target0_20260728
+dirname: ${output_dir}
+
+pretrained_encoder_checkpoint: exps/neural_field/nf_unified/model.pt
+data_dir: funcbind/dataset/data
+dataset: mcpp
+split: test
+sample_index: 0
+reg_weight: 1e-5
+
+steps: 5000
+minimum_steps: 2000
+patience_steps: 1500
+report_every: 100
+batch_points: 4096
+validation_points: 16384
+positive_threshold: 0.1
+tail_threshold: 0.005
+positive_fraction: 0.50
+tail_fraction: 0.25
+positive_loss_weight: 0.50
+tail_loss_weight: 0.25
+background_loss_weight: 0.25
+target_value_weight: 4.0
+lr_decoder: 2e-3
+min_lr_decoder: 2e-5
+gradient_clip_norm: 5.0
+min_delta: 1e-7
+full_render_chunk_size: 4096
+atom_match_distance: 1.0
+occupancy_point_threshold: 0.1
+
+gaussian_splat_decoder:
+  type: gaussian_splat
+  compile: false
+  hidden_dim: 512
+  code_dim: 128
+  gaussians_per_voxel: 2
+  scale_min: 0.25
+  scale_max: 1.25
+  offset_bound: 0.5
+  initial_opacity: 0.01
+  opacity_threshold: 0.001
+  cutoff_sigma: 3.2
+  query_chunk_size: 512
+  gaussian_chunk_size: 512
+
+hydra:
+  run:
+    dir: ./${output_dir}

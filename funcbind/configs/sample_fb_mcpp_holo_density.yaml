@@ -1,0 +1,45 @@
+defaults:
+  - sampling: sampling_large
+  - sampler: diffusion_sampling
+  - override hydra/job_logging: custom
+  - _self_
+
+debug: false
+wandb: true
+seed: 1234
+gpu_type: b200
+
+# Point this at a checkpoint trained with train_fb_mcpp_holo_density.
+fb_pretrained_path: exps/funcbind/fb_mcpp_holo_density
+exp_name: "sampling_fb_mcpp_holo_density_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
+dirname: ${fb_pretrained_path}/eval_${sampling.split}_${sampler.dirname_sampler}_${exp_name}
+out_dir: res
+save_dir: ${dirname}/samples/${out_dir}
+
+dset:
+  data_dir: /home1/irteam/funcbind/funcbind/dataset/data
+  input_dataset: omni_v1
+  use_single_dataset: mcpp
+  mcpp_holo_density_dir: /home1/irteam/funcbind/funcbind/dataset/data/mcpp_holo_xray_v1
+  voxbind_python_root: /home1/irteam/VoxBind
+
+denoiser:
+  cfg_dropout: 0.0
+
+sampling:
+  rotate_receptor: false
+  filter_length: false
+  n_samples_per_receptor: 100
+
+sampler:
+  beta: 3.0
+
+hydra:
+  run:
+    dir: ${save_dir}
+  job:
+    config:
+      override_dirname:
+        kv_sep: ""
+        item_sep: "_"
+        exclude_keys: ["save_dir", "exp_dir", "fb_pretrained_path", "out_dir"]

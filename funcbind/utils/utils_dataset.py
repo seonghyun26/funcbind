@@ -66,15 +66,24 @@ def create_field_loaders(
             dset = Subset(dset, indexes)  # Smaller training set for debugging
     assert len(dset) > 0, f"{len(dset)=}"
 
+    num_workers = int(config["dset"]["num_workers"])
+    loader_kwargs = {}
+    if num_workers > 0:
+        loader_kwargs.update(
+            persistent_workers=bool(config["dset"].get("persistent_workers", True)),
+            prefetch_factor=int(config["dset"].get("prefetch_factor", 4)),
+        )
+
     loader = torch.utils.data.DataLoader(
         dset,
         batch_size=min(config["dset"]["batch_size"], len(dset)),
-        num_workers=config["dset"]["num_workers"],
+        num_workers=num_workers,
         shuffle=(shuffle and not rebalance) if shuffle is not None else not rebalance if split == "train" else False,
         pin_memory=True,
         drop_last=drop_last,
         collate_fn=collate_fn,
-        sampler=RandomizedMinorityUpsampler(dset.cluster_dict) if rebalance else None
+        sampler=RandomizedMinorityUpsampler(dset.cluster_dict) if rebalance else None,
+        **loader_kwargs,
     )
     fabric.print(f">> {split} set size: {len(dset)}")
 

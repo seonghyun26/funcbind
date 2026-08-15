@@ -23,6 +23,8 @@ dset:
   batch_size: 96
   rebalance: True
   beta2: 0.95
+  persistent_workers: True
+  prefetch_factor: 4
 denoiser:
   dropout: 0.0
   cfg_dropout: 0.1
@@ -37,6 +39,16 @@ ref_batches: 20040
 ema_decay: 0.9999
 ema_stds: [0.05]
 gpu_type: "b200"  # Options: b200, a100
+
+# DDP/throughput settings. These can be disabled individually for parity tests.
+performance:
+  ddp_gradient_as_bucket_view: True
+  ddp_static_graph: False
+  find_unused_parameters: False
+  gpu_prefetch: True
+  fixed_voxel_box: True
+  ema_foreach: True
+  optimizer_foreach: True
 
 # set the running dir
 hydra:

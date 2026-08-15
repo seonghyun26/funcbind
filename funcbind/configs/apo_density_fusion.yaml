@@ -1,0 +1,17 @@
+defaults:
+  - holo_density_fusion
+  - _self_
+
+# Control for the holo-density run: the same map with the ligand erased.
+# Everything else -- seed, checkpoints, adapter, sampler, paired latents -- is
+# inherited unchanged, so the two runs differ only in the density input.
+exp_name: apo_density_fusion_5mgl_target69
+output_dir: exps/density_fusion/apo_5mgl_target69_20260730
+
+density:
+  apo_mask:
+    enabled: true
+  # Also replay the holo-trained adapter on the masked map. If it keeps the
+  # holo improvement on a map with no ligand, the adapter memorized the target
+  # rather than read the density.
+  transfer_adapter_path: exps/density_fusion/holo_5mgl_target69_20260728/density_adapter.pt

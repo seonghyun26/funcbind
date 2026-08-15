@@ -1,0 +1,42 @@
+defaults:
+  - unet_edm2_XXXL
+  - _self_
+
+model_name: unet_edm2_XXXL_density
+
+# Frozen CDG (colour + density + gradmag) conditioning, zero-init.
+# Off in the base config; this file is the only thing that turns it on, so the
+# density-free recipe stays bit-identical when it is not selected.
+with_density: True
+
+density:
+  voxbind_python_root: /home1/irteam/VoxBind
+
+  # Champion 100M ChannelViT used by the completed VoxBind receptor-ED zero-init
+  # experiment. Keep the architecture fields in sync with its model-zoo config.
+  pretrained_path: /home1/irteam/VoxBind/voxbind/model_zoo/champion_100m_v2_mask075/checkpoint_e0049.pth.tar
+  patch: 8
+  dim: 640
+  depth: 18
+  heads: 10
+  mlp_ratio: 4
+  c_out: 16
+  pos_encoding: learnable
+  patch_embed_mode: channel_group
+  channel_groups: [7, 4, 2]
+
+  freeze: True
+  encoder_amp: True      # bf16 on the frozen trunk only; the trainable proj stays fp32
+  voxelizer_backend: torch
+  proj_hidden: 192
+
+  # The density crop is 64 * 0.25 = 16 A wide; FuncBind's receptor latent box is
+  # 128 * 0.25 = 32 A. Both are centred on the same recentred conformer, and the
+  # encoder's patch pitch (8 * 0.25 = 2 A) already equals the latent cell pitch
+  # (32 / 16 = 2 A), so the 8^3 feature map is written into the central 8^3 of the
+  # 16^3 latent and the remaining cells stay exactly zero. False restores the earlier
+  # behaviour, which resized 8^3 -> 16^3 and so doubled every feature's distance from
+  # the pocket centre.
+  spatial_align: True
+
+  # The density dataset itself is selected under dset.*; this block is encoder-only.

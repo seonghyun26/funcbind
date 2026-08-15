@@ -13,10 +13,11 @@ exp_name: "all_target_reconstruction_${variant}_${now:%Y%m%d}_${now:%H%M%S}"
 output_dir: "exps/decoder_ablation/${exp_name}"
 dirname: ${output_dir}
 
-# Complete MCPP small-molecule test split. end_index=null means dataset length.
+# Controlled per-target overfit utility. Larger ranges require an explicit
+# end_index override; dataset-scale fitting uses train_frozen_decoder.py.
 split: test
 start_index: 0
-end_index: null
+end_index: 1
 resume: true
 fail_fast: false
 

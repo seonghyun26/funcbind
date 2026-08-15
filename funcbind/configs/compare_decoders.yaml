@@ -20,6 +20,11 @@ sample_index: 0
 steps: 250
 report_every: 25
 train_encoder: true
+# Optional unified neural-field checkpoint. When set, also use
+# train_encoder=false and reg_weight=1e-5; the deterministic posterior mean is
+# passed to both freshly initialized decoders.
+pretrained_encoder_checkpoint: null
+deterministic_posterior: false
 lr_encoder: 1e-4
 lr_decoder: 1e-4
 gradient_clip_norm: 1.0

@@ -122,3 +122,5 @@ env \
     MKL_NUM_THREADS=2 \
     OPENBLAS_NUM_THREADS=2 \
     "${python_bin}" "${repo_root}/funcbind/notebook/render_overfit_report.py"
+echo "3D assets rendered; starting the frozen-encoder small-molecule comparison."
+bash "${repo_root}/funcbind/launch_frozen_decoder_comparison.sh"

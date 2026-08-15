@@ -1,0 +1,126 @@
+defaults:
+  - sampling: sampling_small
+  - sampler: diffusion_sampling
+  - override hydra/job_logging: custom
+  - _self_
+
+seed: 1269
+wandb: false
+n_devs: 1
+gpu_type: b200
+debug: false
+
+exp_name: apo_gaussian_multi_target_10
+output_dir: exps/density_fusion/apo_gaussian_10targets_20260730
+dirname: ${output_dir}
+save_dir: ${output_dir}/generated
+
+fb_pretrained_path: exps/funcbind/fb_unified
+nf_pretrained_path: exps/neural_field/nf_unified
+data_dir: funcbind/dataset/data
+
+dset:
+  input_dataset: omni_v1
+  use_single_dataset: xdocked
+
+denoiser:
+  cfg_dropout: 0.0
+
+sampling:
+  split: test
+  n_chains: 8
+  n_targets: 10
+  n_samples_per_receptor: 8
+  rotate_receptor: false
+  chain_init: denovo
+  use_metrics: false
+  posecheck: false
+  docking_mode: null
+  batch_size_render: 8192
+  batch_size_render_codes: 1
+  save_voxel: false
+  flexible: true
+
+sampler:
+  sigma_min: 0.01
+  sigma_max: 10.0
+  N: 64
+  S_churn: 30
+  S_min: 5.0
+  S_max: 7.0
+  S_noise: 1.003
+  beta: 2.0
+  verbose: false
+  modality_cond: true
+
+density:
+  # The first ten CrossDocked test targets that have an aligned density crop.
+  # Chosen by index order rather than by result, so this is not a cherry-pick.
+  target_indices: [2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
+  crop_root: /home1/irteam/VoxBind/voxbind/dataset/data/xray_crops_aligned_v5/test
+  encoder_checkpoint: /home1/irteam/VoxBind/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
+  voxbind_python_root: /home1/irteam/VoxBind
+  full_render_chunk_size: 8192
+  occupancy_point_threshold: 0.1
+  density_point_threshold: 1.5
+  atom_match_distance: 1.0
+  apo_mask:
+    enabled: true
+    radius_scale: 1.25
+    mask_floor: 0.5
+    solvent_min_distance: 4.0
+    min_solvent_voxels: 1000
+    envelope_radius: 2.0
+    leakage_sigma: 1.5
+
+# One adapter across all ten targets: 300 steps per target, matching the
+# per-target budget of the single-target run.
+adapter:
+  steps: 3000
+  report_every: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  residual_regularization: 0.0001
+  gradient_clip_norm: 1.0
+
+# One Gaussian-splat decoder across all ten targets. No pretrained Gaussian
+# decoder exists, so this is fitted from scratch on the frozen encoder's codes.
+decoder_fit:
+  steps: 20000
+  report_every: 250
+  batch_points: 4096
+  validation_points: 8192
+  positive_threshold: 0.1
+  tail_threshold: 0.005
+  positive_fraction: 0.50
+  tail_fraction: 0.25
+  positive_loss_weight: 0.50
+  tail_loss_weight: 0.25
+  background_loss_weight: 0.25
+  target_value_weight: 4.0
+  lr: 0.002
+  min_lr: 0.00002
+  gradient_clip_norm: 5.0
+  min_delta: 1.0e-7
+
+gaussian_splat_decoder:
+  type: gaussian_splat
+  compile: false
+  hidden_dim: 512
+  code_dim: 128
+  gaussians_per_voxel: 2
+  scale_min: 0.25
+  scale_max: 1.25
+  offset_bound: 0.5
+  initial_opacity: 0.01
+  opacity_threshold: 0.001
+  cutoff_sigma: 3.2
+  query_chunk_size: 512
+  gaussian_chunk_size: 512
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

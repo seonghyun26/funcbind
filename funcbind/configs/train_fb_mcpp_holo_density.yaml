@@ -1,0 +1,83 @@
+defaults:
+  - dset: omni
+  - denoiser: unet_edm2_XXXL_density
+  - sampling: sampling_xsmall
+  - sampler: diffusion
+  - override hydra/job_logging: custom
+  - _self_
+
+debug: false
+wandb: true
+wandb_tags:
+  - funcbind
+  - mcpp
+  - fusion
+  - champion
+  - receptor_ed
+  - full_holo_ed
+  - zero_init
+  - non_oracle
+seed: 1234
+nf_pretrained_path: /home1/irteam/funcbind/exps/neural_field/nf_unified
+
+# Start exactly from the density-free MCP-capable FuncBind weights. The density
+# projection is absent from that checkpoint and remains its exact zero initialization.
+fb_pretrained_path: /home1/irteam/funcbind/exps/funcbind/fb_unified
+resume_optimizer: false
+
+exp_dir: exps/funcbind
+exp_name: "fb_mcpp_holo_density_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
+dirname: "${exp_dir}/${exp_name}"
+receptor_dropout: false
+n_samples: null
+
+num_epochs: 100000
+dset:
+  data_dir: /home1/irteam/funcbind/funcbind/dataset/data
+  input_dataset: omni_v1
+  use_single_dataset: mcpp
+  data_aug: true
+  rebalance: false
+  mcpp_holo_density_dir: /home1/irteam/funcbind/funcbind/dataset/data/mcpp_holo_xray_v1
+  voxbind_python_root: /home1/irteam/VoxBind
+  batch_size: 8
+  val_batch_size: 8
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 2
+  beta2: 0.95
+
+denoiser:
+  dropout: 0.0
+  cfg_dropout: 0.1
+
+sample_every: 10
+val_every: 5
+
+# Full FuncBind fine-tuning from the baseline checkpoint; the encoder trunk stays frozen.
+lr: 0.001
+wd: 0.0001
+use_lr_schedule: true
+ref_batches: 20040
+ema_decay: 0.9999
+ema_stds: [0.05]
+gpu_type: b200
+
+performance:
+  ddp_gradient_as_bucket_view: true
+  ddp_static_graph: false
+  find_unused_parameters: false
+  gpu_prefetch: true
+  fixed_voxel_box: true
+  ema_foreach: true
+  optimizer_foreach: true
+
+hydra:
+  run:
+    dir: ./${dirname}
+  job:
+    config:
+      override_dirname:
+        kv_sep: ""
+        item_sep: "_"
+        exclude_keys: ["exp_dir"]

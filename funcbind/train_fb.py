@@ -53,6 +53,7 @@ from funcbind.utils.constants import N_RECEPTOR_ELEMENTS
 from funcbind.utils.utils_base import makedir, setup_fabric
 from funcbind.utils.utils_dataset import create_field_loaders
 from funcbind.utils.utils_fb import (
+    configure_optimizer_runtime,
     create_field_makers,
     create_funcbind,
     create_optimizer,
@@ -122,8 +123,9 @@ def main(config):
     loader_train = create_field_loaders(config_nf, split="train", fabric=fabric, sample_points=False, n_samples=config_nf["n_samples"])
 
     config_nf_val = copy.deepcopy(config_nf)
-    config_nf_val["dset"]["batch_size"] = 64  # for easy comparison across batch sizes
-    config_val["dset"]["batch_size"] = 64
+    val_batch_size = int(config["dset"].get("val_batch_size", 64))
+    config_nf_val["dset"]["batch_size"] = val_batch_size
+    config_val["dset"]["batch_size"] = val_batch_size
     loader_val = create_field_loaders(config_nf_val, split="val", fabric=fabric, sample_points=False, drop_last=False) if fabric.global_rank == 0 else None
     # loader_sampling = create_field_loaders(config_sampling, split=config["sampling"]["split"], fabric=fabric, sample_points=False, shuffle=False) if fabric.global_rank == 0 else None
 
@@ -131,6 +133,15 @@ def main(config):
     # create field maker
     ##############################
     field_maker, field_maker_receptor = create_field_makers(config, config_nf, fabric)
+    density_voxelizer = None
+    if bool(config["denoiser"].get("with_density", False)):
+        from funcbind.models.density_condition import make_density_voxelizer
+        density_cfg = config["denoiser"]["density"]
+        density_voxelizer = make_density_voxelizer(
+            fabric.device,
+            density_cfg["voxbind_python_root"],
+            backend=density_cfg.get("voxelizer_backend", "torch"),
+        )
 
     ##############################
     # code stats
@@ -142,6 +153,10 @@ def main(config):
         funcbind, funcbind_ema, checkpoint_optimizer, code_stats, acc_iter = load_funcbind(
             config["fb_pretrained_path"], fabric=fabric, config=config, num_classes=num_classes, train=True
         )
+        if not bool(config.get("resume_optimizer", True)):
+            checkpoint_optimizer = None
+            acc_iter = 0
+            fabric.print(">> initialized from FuncBind weights with a fresh optimizer")
     else:
         code_stats = compute_code_stats(
             loader_train, enc, config_nf, "train", fabric, True, field_maker=field_maker, save_dir=val_save_dir, debug=config["debug"],
@@ -152,7 +167,11 @@ def main(config):
         with torch.no_grad():
             assert "ema_stds" in config and config["ema_stds"] is not None and (len(config["ema_stds"]) > 0 and config["ema_stds"][0] != 0.0), "ema_stds must be set and non-empty"
             fabric.print(">> using PowerFunctionEMA with stds", config["ema_stds"])
-            funcbind_ema = PowerFunctionEMA(funcbind, stds=config["ema_stds"])
+            funcbind_ema = PowerFunctionEMA(
+                funcbind,
+                stds=config["ema_stds"],
+                foreach=bool(config.get("performance", {}).get("ema_foreach", True)),
+            )
     dec_module.code_stats = code_stats
 
     ##############################
@@ -163,6 +182,7 @@ def main(config):
     if checkpoint_optimizer is not None:
         fabric.print(">> loading optimizer state")
         optimizer.load_state_dict(checkpoint_optimizer)
+        configure_optimizer_runtime(optimizer, config)
 
     ##############################
     # metrics
@@ -206,6 +226,7 @@ def main(config):
             field_maker=field_maker,
             field_maker_receptor=field_maker_receptor,
             num_classes=num_classes,
+            density_voxelizer=density_voxelizer,
         )
 
         # val
@@ -240,6 +261,7 @@ def main(config):
                         fabric=fabric,
                         plot_bs=plot_bs,
                         num_classes=num_classes,
+                        density_voxelizer=density_voxelizer,
                     )
                     val_loss = sum(val_losses) / len(val_losses)
                     val_weighted_loss = sum(val_weighted_losses) / len(val_weighted_losses)
@@ -358,6 +380,121 @@ def main(config):
             break
 
 
+def _record_stream(value, stream):
+    if isinstance(value, torch.Tensor):
+        value.record_stream(stream)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _record_stream(item, stream)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _record_stream(item, stream)
+
+
+def _prepare_density_batch(batch, config, density_voxelizer, fabric):
+    if not bool(config["denoiser"].get("with_density", False)):
+        return None, None
+    if density_voxelizer is None:
+        raise RuntimeError("density conditioning is enabled but no density voxelizer exists")
+    if "density" not in batch or "density_available" not in batch:
+        raise RuntimeError(
+            "density conditioning is enabled but the dataset did not return density; "
+            "set dset.mcpp_holo_density_dir"
+        )
+    available = batch["density_available"].to(fabric.device, non_blocking=True)
+    from funcbind.models.density_condition import build_density_input
+    density_cfg = config["denoiser"]["density"]
+    density = batch["density"].to(fabric.device, non_blocking=True)
+    density_input = build_density_input(
+        batch["receptor"],
+        density,
+        density_voxelizer,
+        density_cfg["voxbind_python_root"],
+    )
+    return density_input, available
+
+
+@torch.no_grad()
+def _prepare_train_batch(
+    batch,
+    enc,
+    dec_module,
+    model,
+    config,
+    config_nf,
+    field_maker,
+    field_maker_receptor,
+    fabric,
+    num_classes,
+    density_voxelizer,
+):
+    codes_ligand = infer_codes_batch(
+        batch,
+        enc,
+        field_maker,
+        config_nf,
+        code_stats=dec_module.code_stats,
+        save_log_var=False,
+    )[0]
+    voxels_receptor = field_maker_receptor.compute_voxel_grid(
+        batch["receptor"], num_channels=N_RECEPTOR_ELEMENTS
+    )
+    density_input, density_available = _prepare_density_batch(
+        batch, config, density_voxelizer, fabric
+    )
+    batch_size = codes_ligand.size(0)
+    sigma = model.sigma_distribution.sample((batch_size,)).to(fabric.device)
+    smooth_codes_ligand = add_noise_to_code(codes_ligand, sigma=sigma)
+    label_batch = get_label(batch, num_classes=num_classes, config=config)
+    return (codes_ligand, voxels_receptor, sigma, smooth_codes_ligand,
+            label_batch, density_input, density_available)
+
+
+class _TrainBatchPrefetcher:
+    """Prepare the next ligand/receptor batch on a separate CUDA stream."""
+
+    def __init__(self, loader, prepare, enabled=True):
+        self.loader = loader
+        self.prepare = prepare
+        self.enabled = enabled and torch.cuda.is_available()
+        self.stream = torch.cuda.Stream() if self.enabled else None
+
+    def _enqueue(self, batch, current_stream):
+        self.stream.wait_stream(current_stream)
+        with torch.cuda.stream(self.stream):
+            prepared = self.prepare(batch)
+            _record_stream(batch, self.stream)
+        return prepared
+
+    def __iter__(self):
+        if not self.enabled:
+            for batch in self.loader:
+                yield self.prepare(batch)
+            return
+
+        iterator = iter(self.loader)
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            return
+
+        current_stream = torch.cuda.current_stream()
+        prepared = self._enqueue(batch, current_stream)
+        while True:
+            current_stream.wait_stream(self.stream)
+            _record_stream(prepared, current_stream)
+            try:
+                batch = next(iterator)
+                next_prepared = self._enqueue(batch, current_stream)
+            except StopIteration:
+                next_prepared = None
+
+            yield prepared
+            if next_prepared is None:
+                break
+            prepared = next_prepared
+
+
 def train_denoiser(
     loader,
     enc,
@@ -372,7 +509,8 @@ def train_denoiser(
     fabric=None,
     field_maker=None,
     field_maker_receptor=None,
-    num_classes=None
+    num_classes=None,
+    density_voxelizer=None,
 ):
 
     """
@@ -396,33 +534,46 @@ def train_denoiser(
     """
     metrics.reset()
     model.train()
+    optimizer.zero_grad(set_to_none=True)
 
-    for batch in loader:
+    performance = config.get("performance", {})
+    prefetcher = _TrainBatchPrefetcher(
+        loader,
+        prepare=lambda batch: _prepare_train_batch(
+            batch,
+            enc,
+            dec_module,
+            model,
+            config,
+            config_nf,
+            field_maker,
+            field_maker_receptor,
+            fabric,
+            num_classes,
+            density_voxelizer,
+        ),
+        enabled=bool(performance.get("gpu_prefetch", True)),
+    )
+
+    for prepared in prefetcher:
         learning_rate_schedule(optimizer, acc_iter, config, world_size=fabric.world_size)
-
-        with torch.no_grad():
-            codes_ligand = infer_codes_batch(
-                batch, enc, field_maker, config_nf, code_stats=dec_module.code_stats, save_log_var=False
-            )[0]
-            voxels_receptor = field_maker_receptor.compute_voxel_grid(
-                batch["receptor"], num_channels=N_RECEPTOR_ELEMENTS
-            )
-
-            batch_size = codes_ligand.size(0)
-            sigma = model.sigma_distribution.sample((batch_size,)).to(fabric.device)
-            smooth_codes_ligand = add_noise_to_code(codes_ligand, sigma=sigma)
-
-            label_batch = get_label(batch, num_classes=num_classes, config=config)
+        (codes_ligand, voxels_receptor, sigma, smooth_codes_ligand,
+         label_batch, density_input, density_available) = prepared
+        batch_size = codes_ligand.size(0)
 
         acc_iter += (batch_size * fabric.world_size)
         if config["sampler"]["name"] == "walkjump":
             codes_pred = model(
-                smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma, classes=label_batch
+                smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
+                classes=label_batch, density_input=density_input,
+                density_available=density_available,
             )
             weighted_loss = ((codes_pred - codes_ligand) ** 2).sum()
         else:
             codes_pred, logvar = model(
-                smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma, classes=label_batch, return_logvar=True,
+                smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
+                classes=label_batch, return_logvar=True, density_input=density_input,
+                density_available=density_available,
             )
             sigma = sigma.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             weight = (sigma**2 + model.sigma_data**2) / (
@@ -432,9 +583,9 @@ def train_denoiser(
             weighted_loss = (
                 weight_over_var * ((codes_pred - codes_ligand) ** 2) + logvar
             ).sum()
-        optimizer.zero_grad()
         fabric.backward(weighted_loss)
         optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
         if hasattr(model_ema, "emas"):
             model_ema.update(acc_iter, batch_size * fabric.world_size)
@@ -459,6 +610,7 @@ def val_denoiser(
     fabric=None,
     plot_bs=10,
     num_classes=None,
+    density_voxelizer=None,
 ):
     """
     Validate the denoising model on the given data loader.
@@ -492,6 +644,9 @@ def val_denoiser(
             voxels_receptor = field_maker_receptor.compute_voxel_grid(
                 batch["receptor"], num_channels=N_RECEPTOR_ELEMENTS
             )
+            density_input, density_available = _prepare_density_batch(
+                batch, config, density_voxelizer, fabric
+            )
             sigma = sigma_ * torch.ones(
                 codes_ligand.shape[0],
                 device=codes_ligand.device,
@@ -501,7 +656,9 @@ def val_denoiser(
             smooth_codes_ligand = add_noise_to_code(codes_ligand, sigma=sigma)
             if config["sampler"]["name"] == "walkjump":
                 codes_pred = model(
-                    smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma, classes=label_batch, cfg_dropout=False
+                    smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
+                    classes=label_batch, cfg_dropout=False, density_input=density_input,
+                    density_available=density_available,
                 )
                 weighted_loss = ((codes_pred - codes_ligand) ** 2).sum()
                 loss = weighted_loss
@@ -509,7 +666,9 @@ def val_denoiser(
                 logvar = torch.zeros_like(weighted_loss)
             else:
                 codes_pred, logvar = model(
-                    smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma, classes=label_batch, return_logvar=True, cfg_dropout=False
+                    smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
+                    classes=label_batch, return_logvar=True, cfg_dropout=False,
+                    density_input=density_input, density_available=density_available,
                 )
                 sigma = (sigma.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1))
                 weight = (sigma**2 + model.sigma_data**2) / ((sigma * model.sigma_data) ** 2)  # Eq. 15 in EDM2
@@ -609,14 +768,30 @@ def prepare_sampler(
     model,
     field_maker,
     field_maker_receptor,
+    batch=None,
+    density_voxelizer=None,
 ):
     # rotations
+    if model.density_condition is not None and config["sampling"]["rotate_receptor"]:
+        raise ValueError(
+            "density-conditioned sampling requires sampling.rotate_receptor=false; "
+            "the receptor-level density crop is already aligned to the sample frame"
+        )
     if config["sampling"]["rotate_receptor"]:
         rand_rots = [random_rot_matrix() for _ in range(config["sampling"]["n_chains"])]
         fabric.print(f">> rotate gt ligand and receptor. {len(rand_rots)} rotation matrices")
     else:
         rand_rots = None
     receptor_encoding = get_receptor_encoding(receptor, model, field_maker_receptor, fabric, rand_rots, config["sampling"]["n_chains"])
+    if model.density_condition is not None:
+        if batch is None:
+            raise RuntimeError("density-conditioned sampling requires the source batch")
+        density_input, density_available = _prepare_density_batch(
+            batch, config, density_voxelizer, fabric
+        )
+        receptor_encoding = model.fuse_density_condition(
+            receptor_encoding, density_input, density_available
+        )
     ligand_encoding = None
     if config["sampling"]["chain_init"] == "ligand":
         ligand_encoding = get_ligand_encoding(ligand_gt, model, enc, field_maker, fabric, config_nf, rand_rots, config["sampling"]["n_chains"])
@@ -649,6 +824,15 @@ def sample(
         model = model.module
     enc = enc.module if hasattr(enc, "module") else enc
     model.eval()
+    density_voxelizer = None
+    if model.density_condition is not None:
+        from funcbind.models.density_condition import make_density_voxelizer
+        density_cfg = config["denoiser"]["density"]
+        density_voxelizer = make_density_voxelizer(
+            fabric.device,
+            density_cfg["voxbind_python_root"],
+            backend=density_cfg.get("voxelizer_backend", "torch"),
+        )
 
     dirname_out = os.path.join(config["dirname"], "samples")
     os.makedirs(dirname_out, exist_ok=True)
@@ -701,7 +885,9 @@ def sample(
         while (len(valid_mols) < config["sampling"]["n_samples_per_receptor"] and attempts < n_attempts):
             # Step 0 : Prepare sampler
             ligand_encoding, receptor_encoding, rand_rots = prepare_sampler(
-                config, config_nf, fabric, receptor, ligand_gt, enc, model, field_maker, field_maker_receptor
+                config, config_nf, fabric, receptor, ligand_gt, enc, model,
+                field_maker, field_maker_receptor, batch=batch,
+                density_voxelizer=density_voxelizer,
             )
 
             # Step 1: Sampling n_chains

@@ -335,7 +335,7 @@ def _multi_tensor_adamw(
 
     if amsgrad:
         # Maintains the maximum of all 2nd moment running avg. till now
-        max_exp_avg_sqs = torch._foreach_maximum(max_exp_avg_sqs, exp_avg_sqs)
+        torch._foreach_maximum_(max_exp_avg_sqs, exp_avg_sqs)
 
         # Use the max. for normalizing running avg. of gradient
         max_exp_avg_sq_sqrt = torch._foreach_sqrt(max_exp_avg_sqs)
@@ -347,6 +347,11 @@ def _multi_tensor_adamw(
         bias_correction_sqrt = [math.sqrt(bc) for bc in bias_correction2]
         torch._foreach_div_(exp_avg_sq_sqrt, bias_correction_sqrt)
         denom = torch._foreach_add(exp_avg_sq_sqrt, eps)
+
+    # Preserve the custom single-tensor behavior when eps=0. Parameters that
+    # have never received a non-zero gradient otherwise produce 0 / 0 here.
+    for denom_tensor in denom:
+        denom_tensor.masked_fill_(denom_tensor == 0, float("inf"))
 
     step_size = [-1 * (lr / bc) for bc in bias_correction1]
     torch._foreach_addcdiv_(params, exp_avgs, denom, step_size)

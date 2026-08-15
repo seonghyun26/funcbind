@@ -1,0 +1,127 @@
+# Train ONE Gaussian-splat decoder over the full drug + MCP corpus with the
+# released FuncBind encoder frozen.
+#
+# Run with:
+#   python funcbind/train_frozen_decoder.py --config-name train_decoder_full
+#
+# Differs from train_frozen_decoder.yaml (the ablation config) in two ways:
+#   1. both sub-datasets are loaded instead of xdocked alone,
+#   2. the decoder is the full-corpus head, not the 86k-parameter overfit head.
+#
+# train_frozen_decoder.py is hardcoded to one sample per step
+# (`collate_fn([dataset[index]])`), so dset.batch_size and dset.num_workers are
+# ignored. Measured per sample, back to back in one process, on an H200 that
+# another job was saturating -- so read these as ratios, not as a promise:
+#
+#   _get_xs                  0.2 ms
+#   compute_occupancies     12.1 ms     target
+#   decoder fwd+bwd         48.0 ms     the actual training (29.0 ms when the
+#                                       GPU was less contended -- it swings ~2x)
+#   ----------------------------------
+#   train step              60.3 ms
+#   cache pass              61.8 ms     amortised /5 -> 12.4 ms
+#
+# -> ~4.0 h/epoch, 4.2 d for 25, against 6.8 h/epoch and 7.1 d when the encoder
+# runs every step. Neither earlier approach re-encoded per step: train_nf.py
+# batches the encoder 16-32x through create_field_loaders, and the ten-target
+# splat fit encoded its codes once and ran 20k decoder-only steps.
+defaults:
+  - dset: omni
+  - encoder: cnn
+  - decoder: decoder
+  - override hydra/job_logging: custom
+  - _self_
+
+seed: 1234
+wandb: false
+n_devs: 1
+variant: gaussian_splat
+exp_name: "decoder_full_${variant}_${now:%Y%m%d}_${now:%H%M%S}"
+output_dir: "exps/decoder_full/${exp_name}"
+dirname: ${output_dir}
+
+pretrained_encoder_checkpoint: "exps/neural_field/nf_unified/model.pt"
+split: train
+# The legacy up-front cache is off: it is indexed positionally (which the
+# rebalanced order breaks) and it pairs a latent and a target drawn under
+# different seeds (which data_aug would turn into a pose mismatch).
+cache_latents: false
+# Windowed cache instead. Every `latent_cache_refresh_every` epochs each sample
+# gets a freshly augmented pose, encoded once and held in fp16 together with the
+# ligand atoms that produced it; the target is rebuilt from those atoms with new
+# query points every epoch. 0 disables it and falls back to inline encoding.
+#   cache size  = 199,762 x 1 MiB = 209 GB fp16 (host RAM available: ~1.78 TB)
+#   refresh cost = 199,762 x ~55 ms = ~3.0 h, amortised over 5 epochs
+latent_cache_refresh_every: 5
+# Full-grid reconstruction renders 128^3 points per sample, so it runs on the
+# held-out split and only on a bounded slice of it.
+eval_split: val
+eval_max_targets: 185
+resume: true
+epochs: 25
+save_every_epochs: 1
+lr_decoder: 1e-4
+gradient_clip_norm: 1.0
+timing_warmup_steps: 10
+evaluation_query_chunk_size: 4096
+atom_match_distance: 1.0
+
+# Keep the pretrained variational encoder topology (256 moment channels);
+# deterministic posterior means provide the shared 128-channel latent grid.
+reg_weight: 1e-5
+
+dset:
+  # Both modalities. sabdab is deliberately absent -- its data is not on disk,
+  # and `use_single_dataset: null` would try to load it and fail.
+  datasets: ["xdocked", "mcpp"]
+  use_single_dataset: null
+  data_aug: true
+  # Epoch length becomes min(cluster) * n_clusters = 99,881 * 2 = 199,762, and
+  # RandomizedMinorityUpsampler reshuffles each cluster every epoch, so the
+  # 186.5k MCP conformers take turns instead of the first 99,881 being pinned.
+  rebalance: true
+  # Ignored by train_frozen_decoder.py (one sample per step); left explicit so
+  # the intended batching is recorded if the loop is ever batched.
+  batch_size: 1
+  num_workers: 0
+  n_points: 12_000
+  targeted_sampling_ratio: 2
+  # 10 = the omni default that train_nf.py trains with, not the 40 the
+  # small-scale ablation used. 40 means _get_xs does randperm over 81^3 = 531,441
+  # offsets every step (8.0 ms, vs 0.2 ms at 21^3) to scatter query points +-10 A
+  # from each atom -- mostly empty space the uniform component already covers.
+  cubes_around: 10
+
+inr_decoder:
+  type: inr
+  compile: false
+  hidden_dim: 3072
+  code_dim: 128
+  coord_dim: 3
+  n_layers: 6
+  input_scale: 64
+
+# Full-corpus head; see configs/decoder/gaussian_splat_full.yaml for the sizing
+# rationale. Kept inline because train_frozen_decoder.py selects the decoder by
+# `${variant}_decoder` rather than through the defaults list.
+gaussian_splat_decoder:
+  type: gaussian_splat
+  compile: false
+  code_dim: 128
+  hidden_dim: 1024
+  n_layers: 4
+  kernel_size: 3
+  norm_groups: 32
+  gaussians_per_voxel: 2
+  scale_min: 0.25
+  scale_max: 1.25
+  offset_bound: 0.5
+  initial_opacity: 0.01
+  opacity_threshold: 0.001
+  cutoff_sigma: 3.2
+  query_chunk_size: 4096
+  gaussian_chunk_size: 512
+
+hydra:
+  run:
+    dir: ./${output_dir}

@@ -78,6 +78,22 @@ from funcbind.utils.utils_sampling import (
 )
 
 
+def _wandb_log_exact(payload, step, fabric):
+    """Log with W&B's native step equal to the optimizer step.
+
+    Lightning's WandbLogger converts its step argument into a metric named
+    trainer/global_step and lets W&B auto-increment its internal step. VoxBind
+    calls wandb.log with an explicit step directly, so do the same here.
+    """
+    if fabric.global_rank != 0:
+        return
+    try:
+        import wandb
+        wandb.log(payload, step=int(step))
+    except Exception as exc:
+        fabric.print(f">> W&B step log failed at global_step={step}: {exc}")
+
+
 @hydra.main(config_path="configs", config_name="train_fb", version_base=None)
 def main(config):
     fabric = setup_fabric(config)
@@ -150,14 +166,28 @@ def main(config):
     checkpoint_optimizer = None
     if config["fb_pretrained_path"] is not None and os.path.exists(os.path.join(config["fb_pretrained_path"], "checkpoint.pth.tar")):
         fabric.print(f">> loading checkpoint from {config['fb_pretrained_path']}")
-        funcbind, funcbind_ema, checkpoint_optimizer, code_stats, acc_iter = load_funcbind(
-            config["fb_pretrained_path"], fabric=fabric, config=config, num_classes=num_classes, train=True
+        (
+            funcbind,
+            funcbind_ema,
+            checkpoint_optimizer,
+            code_stats,
+            acc_iter,
+            global_step,
+        ) = load_funcbind(
+            config["fb_pretrained_path"],
+            fabric=fabric,
+            config=config,
+            num_classes=num_classes,
+            train=True,
+            return_global_step=True,
         )
         if not bool(config.get("resume_optimizer", True)):
             checkpoint_optimizer = None
             acc_iter = 0
+            global_step = 0
             fabric.print(">> initialized from FuncBind weights with a fresh optimizer")
     else:
+        global_step = 0
         code_stats = compute_code_stats(
             loader_train, enc, config_nf, "train", fabric, True, field_maker=field_maker, save_dir=val_save_dir, debug=config["debug"],
         )
@@ -209,9 +239,11 @@ def main(config):
 
     for epoch in range(0, config["num_epochs"]):
         t0 = time.time()
+        if hasattr(loader_train.sampler, "set_epoch"):
+            loader_train.sampler.set_epoch(epoch)
 
         # train
-        train_loss, acc_iter = train_denoiser(
+        train_loss, acc_iter, global_step = train_denoiser(
             loader_train,
             enc,
             dec_module,
@@ -222,6 +254,8 @@ def main(config):
             config_nf,
             funcbind_ema,
             acc_iter,
+            global_step,
+            epoch,
             fabric,
             field_maker=field_maker,
             field_maker_receptor=field_maker_receptor,
@@ -275,6 +309,7 @@ def main(config):
                             "optimizer": optimizer.state_dict(),
                             "code_stats": dec_module.code_stats,
                             "acc_iter": acc_iter,
+                            "global_step": global_step,
                         }
                         checkpoint_path = os.path.join(config["dirname"], "checkpoint.pth.tar")
                         try:
@@ -356,13 +391,19 @@ def main(config):
         )
 
         if config["wandb"]:
-            fabric.log_dict(
+            _wandb_log_exact(
                 {
-                    "trainer/global_step": epoch,
+                    # Match VoxBind: epoch is zero-based, global_step increments once
+                    # per optimizer update and is the explicit W&B x-axis.
+                    "epoch": epoch,
+                    "trainer/epoch": epoch,
+                    "trainer/epoch_number": epoch + 1,
+                    "trainer/global_step": global_step,
                     "acc_iter": acc_iter,
                     "acc_iter_normalized": acc_iter / (config["dset"]["batch_size"] * fabric.world_size),
                     "lr": optimizer.param_groups[0]["lr"],
                     "train_loss": train_loss,
+                    "train/weighted_loss_epoch": train_loss,
                     "val_loss": val_loss,
                     "val_weighted_loss": val_weighted_loss,
                     **{f"val_loss_sigma_{sigma}": loss for sigma, loss in zip(val_sigmas, val_losses)},
@@ -371,7 +412,9 @@ def main(config):
                     **{f"val_logvar_sigma_{sigma}": loss for sigma, loss in zip(val_sigmas, val_logvars)},
                     **{f"val_validity_sigma_{sigma}": validity for sigma, validity in val_validity.items()},
                     "sampling": sampling_metrics,
-                }
+                },
+                global_step,
+                fabric,
             )
 
         # If train_loss is nan, break
@@ -506,6 +549,8 @@ def train_denoiser(
     config_nf,
     model_ema=None,
     acc_iter=0,
+    global_step=0,
+    epoch=0,
     fabric=None,
     field_maker=None,
     field_maker_receptor=None,
@@ -555,7 +600,12 @@ def train_denoiser(
         enabled=bool(performance.get("gpu_prefetch", True)),
     )
 
-    for prepared in prefetcher:
+    n_batches = len(loader)
+    log_every = max(1, int(config.get("log_every_steps", 25)))
+    interval_t0 = time.perf_counter()
+    interval_step0 = global_step
+
+    for batch_idx, prepared in enumerate(prefetcher):
         learning_rate_schedule(optimizer, acc_iter, config, world_size=fabric.world_size)
         (codes_ligand, voxels_receptor, sigma, smooth_codes_ligand,
          label_batch, density_input, density_available) = prepared
@@ -586,6 +636,7 @@ def train_denoiser(
         fabric.backward(weighted_loss)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+        global_step += 1
 
         if hasattr(model_ema, "emas"):
             model_ema.update(acc_iter, batch_size * fabric.world_size)
@@ -593,7 +644,55 @@ def train_denoiser(
             model_ema.update(model)
         metrics.update(weighted_loss)
 
-    return metrics.compute().item(), acc_iter
+        if global_step % log_every == 0:
+            # All ranks participate in the reduction; only rank zero talks to W&B.
+            step_loss = fabric.all_reduce(
+                weighted_loss.detach(), reduce_op="mean"
+            ).item()
+            elapsed = max(time.perf_counter() - interval_t0, 1e-9)
+            interval_steps = global_step - interval_step0
+            steps_per_second = interval_steps / elapsed
+            samples_per_second = (
+                interval_steps * batch_size * fabric.world_size / elapsed
+            )
+            if fabric.global_rank == 0:
+                progress = (batch_idx + 1) / max(n_batches, 1)
+                payload = {
+                    "epoch": epoch,
+                    "trainer/epoch": epoch,
+                    "trainer/epoch_number": epoch + 1,
+                    "trainer/epoch_progress": epoch + progress,
+                    "trainer/batch_in_epoch": batch_idx + 1,
+                    "trainer/batches_per_epoch": n_batches,
+                    "trainer/global_step": global_step,
+                    "trainer/samples_seen": acc_iter,
+                    "train/weighted_loss_step": step_loss,
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "performance/steps_per_second": steps_per_second,
+                    "performance/samples_per_second": samples_per_second,
+                }
+                if torch.cuda.is_available():
+                    gib = 1024 ** 3
+                    payload.update({
+                        "system/gpu_memory_allocated_gib":
+                            torch.cuda.memory_allocated() / gib,
+                        "system/gpu_memory_reserved_gib":
+                            torch.cuda.memory_reserved() / gib,
+                        "system/gpu_max_memory_allocated_gib":
+                            torch.cuda.max_memory_allocated() / gib,
+                    })
+                if config["wandb"]:
+                    _wandb_log_exact(payload, global_step, fabric)
+                fabric.print(
+                    f">> epoch {epoch} step {batch_idx + 1}/{n_batches} "
+                    f"global_step={global_step} loss={step_loss:.4g} "
+                    f"steps/s={steps_per_second:.3f} "
+                    f"samples/s={samples_per_second:.2f}"
+                )
+            interval_t0 = time.perf_counter()
+            interval_step0 = global_step
+
+    return metrics.compute().item(), acc_iter, global_step
 
 
 @torch.no_grad()

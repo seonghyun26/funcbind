@@ -38,6 +38,7 @@ def load_funcbind(
     config = None,
     num_classes=None,
     train=False,
+    return_global_step=False,
 ):
     """
     Loads a checkpoint file and restores the model and optimizer states.
@@ -90,8 +91,22 @@ def load_funcbind(
             fabric.print(">> loaded model_ema")
 
     acc_iter = checkpoint.get("acc_iter", 0)
+    effective_batch = max(
+        1,
+        int(config["dset"]["batch_size"]) * int(getattr(fabric, "world_size", 1)),
+    )
+    global_step = int(checkpoint.get("global_step", acc_iter // effective_batch))
 
     if train:
+        if return_global_step:
+            return (
+                model,
+                model_ema,
+                checkpoint["optimizer"],
+                code_stats,
+                acc_iter,
+                global_step,
+            )
         return model, model_ema, checkpoint["optimizer"], code_stats, acc_iter
     else:
         return model, code_stats, acc_iter

@@ -72,6 +72,14 @@ def create_field_loaders(
         loader_kwargs.update(
             persistent_workers=bool(config["dset"].get("persistent_workers", True)),
             prefetch_factor=int(config["dset"].get("prefetch_factor", 4)),
+            # Training samples can vary substantially in CPU crop/resampling cost.
+            # Consume the first ready worker result instead of letting one slow crop
+            # block already-prepared batches behind it. Keep evaluation deterministic.
+            in_order=(
+                bool(config["dset"].get("in_order", True))
+                if split == "train"
+                else True
+            ),
         )
 
     loader = torch.utils.data.DataLoader(

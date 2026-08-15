@@ -17,6 +17,9 @@ wandb_tags:
   - full_holo_ed
   - zero_init
   - non_oracle
+  - prefetch4
+  - out_of_order
+  - exact_step_logging
 seed: 1234
 nf_pretrained_path: /home1/irteam/funcbind/exps/neural_field/nf_unified
 
@@ -44,7 +47,8 @@ dset:
   val_batch_size: 8
   num_workers: 8
   persistent_workers: true
-  prefetch_factor: 2
+  prefetch_factor: 4
+  in_order: false
   beta2: 0.95
 
 denoiser:
@@ -61,6 +65,7 @@ use_lr_schedule: true
 ref_batches: 20040
 ema_decay: 0.9999
 ema_stds: [0.05]
+log_every_steps: 25
 gpu_type: b200
 
 performance:

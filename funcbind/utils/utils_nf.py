@@ -437,6 +437,11 @@ def update_config_nf(config_nf, config):
     ):
         if key in config["dset"]:
             config_nf["dset"][key] = config["dset"][key]
+    # Same failure mode as data_dir above: the run config advertises n_samples, but
+    # without this the neural-field checkpoint's own value wins and the override is
+    # silently dropped. Only a set value takes effect, so full runs are unaffected.
+    if config.get("n_samples") is not None:
+        config_nf["n_samples"] = config["n_samples"]
     return config_nf
 
 

@@ -94,6 +94,32 @@ def _wandb_log_exact(payload, step, fabric):
         fabric.print(f">> W&B step log failed at global_step={step}: {exc}")
 
 
+def _save_training_checkpoint(state, dirname, is_best=False):
+    """Atomically replace the rolling checkpoint and optionally retain the best.
+
+    The best checkpoint is a hard link to the newly written rolling checkpoint.
+    This avoids serializing and copying a roughly 58 GiB state twice. A later
+    atomic replacement of ``checkpoint.pth.tar`` leaves the prior best intact.
+    """
+    checkpoint_path = os.path.join(dirname, "checkpoint.pth.tar")
+    checkpoint_tmp = f"{checkpoint_path}.tmp"
+    torch.save(state, checkpoint_tmp)
+    os.replace(checkpoint_tmp, checkpoint_path)
+
+    best_path = None
+    if is_best:
+        best_path = os.path.join(dirname, "checkpoint_best.pth.tar")
+        best_tmp = f"{best_path}.tmp"
+        try:
+            os.unlink(best_tmp)
+        except FileNotFoundError:
+            pass
+        os.link(checkpoint_path, best_tmp)
+        os.replace(best_tmp, best_path)
+
+    return checkpoint_path, best_path
+
+
 @hydra.main(config_path="configs", config_name="train_fb", version_base=None)
 def main(config):
     fabric = setup_fabric(config)
@@ -142,7 +168,9 @@ def main(config):
     val_batch_size = int(config["dset"].get("val_batch_size", 64))
     config_nf_val["dset"]["batch_size"] = val_batch_size
     config_val["dset"]["batch_size"] = val_batch_size
-    loader_val = create_field_loaders(config_nf_val, split="val", fabric=fabric, sample_points=False, drop_last=False) if fabric.global_rank == 0 else None
+    # n_samples is None for full runs, which is exactly the default create_field_loaders
+    # already applies to val, so this only bites when a smoke run bounds the split.
+    loader_val = create_field_loaders(config_nf_val, split="val", fabric=fabric, sample_points=False, drop_last=False, n_samples=config_nf["n_samples"]) if fabric.global_rank == 0 else None
     # loader_sampling = create_field_loaders(config_sampling, split=config["sampling"]["split"], fabric=fabric, sample_points=False, shuffle=False) if fabric.global_rank == 0 else None
 
     ##############################
@@ -164,6 +192,7 @@ def main(config):
     ##############################
     acc_iter = 0
     checkpoint_optimizer = None
+    best_res = 1e10
     if config["fb_pretrained_path"] is not None and os.path.exists(os.path.join(config["fb_pretrained_path"], "checkpoint.pth.tar")):
         fabric.print(f">> loading checkpoint from {config['fb_pretrained_path']}")
         (
@@ -173,6 +202,7 @@ def main(config):
             code_stats,
             acc_iter,
             global_step,
+            best_res,
         ) = load_funcbind(
             config["fb_pretrained_path"],
             fabric=fabric,
@@ -185,7 +215,12 @@ def main(config):
             checkpoint_optimizer = None
             acc_iter = 0
             global_step = 0
+            # Fine-tuning from another run's weights: its best_res was measured against
+            # a different objective, so carrying it over would suppress every save here.
+            best_res = 1e10
             fabric.print(">> initialized from FuncBind weights with a fresh optimizer")
+        else:
+            fabric.print(f">> resuming best_res={best_res}")
     else:
         global_step = 0
         code_stats = compute_code_stats(
@@ -235,7 +270,6 @@ def main(config):
     # start training
     ##############################
     fabric.print(">> start training the denoiser", config["exp_name"])
-    best_res = 1e10
 
     for epoch in range(0, config["num_epochs"]):
         t0 = time.time()
@@ -273,9 +307,14 @@ def main(config):
             [None for _ in range(len(val_sigmas))],
         )
         val_validity = {}
+        val_seconds = None
+        checkpoint_seconds = None
+        checkpoint_saved = False
+        is_best = False
         if (epoch + 1) % config["val_every"] == 0:
             with fabric.rank_zero_first():
                 if fabric.global_rank == 0:
+                    val_t0 = time.perf_counter()
                     (
                         val_weighted_losses,
                         val_losses,
@@ -301,23 +340,13 @@ def main(config):
                     val_weighted_loss = sum(val_weighted_losses) / len(val_weighted_losses)
                     if val_weighted_loss <= best_res:
                         best_res = val_weighted_loss
-                        state = {
-                            "epoch": epoch + 1,
-                            "config": config,
-                            "state_dict": funcbind.state_dict(),
-                            "state_dict_ema": funcbind_ema.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "code_stats": dec_module.code_stats,
-                            "acc_iter": acc_iter,
-                            "global_step": global_step,
-                        }
-                        checkpoint_path = os.path.join(config["dirname"], "checkpoint.pth.tar")
-                        try:
-                            torch.save(state, checkpoint_path)
-                            fabric.print(f"New best checkpoint saved: {checkpoint_path}, best_res: {best_res}")
-                        except Exception as e:
-                            fabric.print(f"Error saving checkpoint: {e}")
+                        is_best = True
+                    val_seconds = time.perf_counter() - val_t0
 
+                    # These plot the arrays val_denoiser just returned, so they belong to
+                    # the validation cadence, not the checkpoint one. Driving them from
+                    # the checkpoint block instead makes every checkpoint-only epoch plot
+                    # all-None series and then die on val_validity, which is empty.
                     plot_metric_vs_sigma(
                         val_sigmas,
                         val_losses,
@@ -364,6 +393,42 @@ def main(config):
                         save_dir=val_save_dir,
                     )
 
+        checkpoint_every = max(1, int(config.get("checkpoint_every", 1)))
+        if (epoch + 1) % checkpoint_every == 0 or epoch == config["num_epochs"] - 1:
+            with fabric.rank_zero_first():
+                if fabric.global_rank == 0:
+                    checkpoint_t0 = time.perf_counter()
+                    state = {
+                        "epoch": epoch + 1,
+                        "config": config,
+                        "state_dict": funcbind.state_dict(),
+                        "state_dict_ema": funcbind_ema.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "code_stats": dec_module.code_stats,
+                        "acc_iter": acc_iter,
+                        "global_step": global_step,
+                        "best_res": best_res,
+                    }
+                    try:
+                        checkpoint_path, best_path = _save_training_checkpoint(
+                            state,
+                            config["dirname"],
+                            is_best=is_best,
+                        )
+                        checkpoint_saved = True
+                        checkpoint_seconds = time.perf_counter() - checkpoint_t0
+                        fabric.print(
+                            f">> latest checkpoint saved: {checkpoint_path} "
+                            f" ({checkpoint_seconds:.1f}s)"
+                        )
+                        if best_path is not None:
+                            fabric.print(
+                                f">> new best checkpoint retained: {best_path}, "
+                                f"best_res: {best_res}"
+                            )
+                    except Exception as e:
+                        fabric.print(f"Error saving checkpoint: {e}")
+
         # sample molecules
         sampling_metrics = None
         # if ((epoch + 1) % config["sample_every"] == 0 or epoch == config["num_epochs"] - 1) and epoch != 0:
@@ -406,6 +471,11 @@ def main(config):
                     "train/weighted_loss_epoch": train_loss,
                     "val_loss": val_loss,
                     "val_weighted_loss": val_weighted_loss,
+                    "performance/validation_seconds": val_seconds,
+                    "performance/checkpoint_seconds": checkpoint_seconds,
+                    "checkpoint/saved": int(checkpoint_saved),
+                    "checkpoint/latest_epoch": epoch + 1 if checkpoint_saved else None,
+                    "checkpoint/is_best": int(is_best),
                     **{f"val_loss_sigma_{sigma}": loss for sigma, loss in zip(val_sigmas, val_losses)},
                     **{f"val_weighted_loss_sigma_{sigma}": loss for sigma, loss in zip(val_sigmas, val_weighted_losses)},
                     **{f"val_weight_over_var_sigma_{sigma}": loss for sigma, loss in zip(val_sigmas, val_weights_over_vars)},
@@ -601,60 +671,93 @@ def train_denoiser(
     )
 
     n_batches = len(loader)
+    accum_steps = max(1, int(config.get("accum_steps", 1)))
+    optimizer_steps_per_epoch = math.ceil(n_batches / accum_steps)
     log_every = max(1, int(config.get("log_every_steps", 25)))
     interval_t0 = time.perf_counter()
     interval_step0 = global_step
+    interval_microstep0 = 0
+    interval_acc_iter0 = acc_iter
+    optimizer_step_in_epoch = 0
+    window_loss_sum = None
+    window_sample_count = 0
 
     for batch_idx, prepared in enumerate(prefetcher):
-        learning_rate_schedule(optimizer, acc_iter, config, world_size=fabric.world_size)
+        window_start = (batch_idx // accum_steps) * accum_steps
+        window_size = min(accum_steps, n_batches - window_start)
+        window_position = batch_idx - window_start
+        should_step = window_position + 1 == window_size
+        if window_position == 0:
+            learning_rate_schedule(
+                optimizer, acc_iter, config, world_size=fabric.world_size
+            )
+            window_loss_sum = None
+            window_sample_count = 0
+
         (codes_ligand, voxels_receptor, sigma, smooth_codes_ligand,
          label_batch, density_input, density_available) = prepared
         batch_size = codes_ligand.size(0)
 
         acc_iter += (batch_size * fabric.world_size)
-        if config["sampler"]["name"] == "walkjump":
-            codes_pred = model(
-                smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
-                classes=label_batch, density_input=density_input,
-                density_available=density_available,
-            )
-            weighted_loss = ((codes_pred - codes_ligand) ** 2).sum()
-        else:
-            codes_pred, logvar = model(
-                smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
-                classes=label_batch, return_logvar=True, density_input=density_input,
-                density_available=density_available,
-            )
-            sigma = sigma.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            weight = (sigma**2 + model.sigma_data**2) / (
-                (sigma * model.sigma_data) ** 2
-            )  # Eq. 15 in EDM2
-            weight_over_var = weight / logvar.exp()  # Eq. 21 in EDM2
-            weighted_loss = (
-                weight_over_var * ((codes_pred - codes_ligand) ** 2) + logvar
-            ).sum()
-        fabric.backward(weighted_loss)
+        window_sample_count += batch_size * fabric.world_size
+        with fabric.no_backward_sync(model, enabled=not should_step):
+            if config["sampler"]["name"] == "walkjump":
+                codes_pred = model(
+                    smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
+                    classes=label_batch, density_input=density_input,
+                    density_available=density_available,
+                )
+                weighted_loss = ((codes_pred - codes_ligand) ** 2).sum()
+            else:
+                codes_pred, logvar = model(
+                    smooth_codes_ligand, receptor=voxels_receptor, sigma=sigma,
+                    classes=label_batch, return_logvar=True,
+                    density_input=density_input,
+                    density_available=density_available,
+                )
+                sigma = sigma.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                weight = (sigma**2 + model.sigma_data**2) / (
+                    (sigma * model.sigma_data) ** 2
+                )  # Eq. 15 in EDM2
+                weight_over_var = weight / logvar.exp()  # Eq. 21 in EDM2
+                weighted_loss = (
+                    weight_over_var * ((codes_pred - codes_ligand) ** 2) + logvar
+                ).sum()
+            fabric.backward(weighted_loss / window_size)
+
+        detached_loss = weighted_loss.detach()
+        window_loss_sum = (
+            detached_loss
+            if window_loss_sum is None
+            else window_loss_sum + detached_loss
+        )
+        metrics.update(detached_loss)
+
+        if not should_step:
+            continue
+
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
+        optimizer_step_in_epoch += 1
 
         if hasattr(model_ema, "emas"):
-            model_ema.update(acc_iter, batch_size * fabric.world_size)
+            model_ema.update(acc_iter, window_sample_count)
         else:
             model_ema.update(model)
-        metrics.update(weighted_loss)
 
         if global_step % log_every == 0:
             # All ranks participate in the reduction; only rank zero talks to W&B.
             step_loss = fabric.all_reduce(
-                weighted_loss.detach(), reduce_op="mean"
+                window_loss_sum / window_size, reduce_op="mean"
             ).item()
             elapsed = max(time.perf_counter() - interval_t0, 1e-9)
             interval_steps = global_step - interval_step0
+            interval_microsteps = (batch_idx + 1) - interval_microstep0
+            interval_samples = acc_iter - interval_acc_iter0
             steps_per_second = interval_steps / elapsed
-            samples_per_second = (
-                interval_steps * batch_size * fabric.world_size / elapsed
-            )
+            micro_batches_per_second = interval_microsteps / elapsed
+            samples_per_second = interval_samples / elapsed
             if fabric.global_rank == 0:
                 progress = (batch_idx + 1) / max(n_batches, 1)
                 payload = {
@@ -664,11 +767,17 @@ def train_denoiser(
                     "trainer/epoch_progress": epoch + progress,
                     "trainer/batch_in_epoch": batch_idx + 1,
                     "trainer/batches_per_epoch": n_batches,
+                    "trainer/optimizer_step_in_epoch": optimizer_step_in_epoch,
+                    "trainer/optimizer_steps_per_epoch": optimizer_steps_per_epoch,
                     "trainer/global_step": global_step,
                     "trainer/samples_seen": acc_iter,
+                    "trainer/accum_steps": accum_steps,
+                    "trainer/effective_batch_size": window_sample_count,
                     "train/weighted_loss_step": step_loss,
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "performance/steps_per_second": steps_per_second,
+                    "performance/optimizer_steps_per_second": steps_per_second,
+                    "performance/micro_batches_per_second": micro_batches_per_second,
                     "performance/samples_per_second": samples_per_second,
                 }
                 if torch.cuda.is_available():
@@ -684,13 +793,17 @@ def train_denoiser(
                 if config["wandb"]:
                     _wandb_log_exact(payload, global_step, fabric)
                 fabric.print(
-                    f">> epoch {epoch} step {batch_idx + 1}/{n_batches} "
+                    f">> epoch {epoch} optimizer_step "
+                    f"{optimizer_step_in_epoch}/{optimizer_steps_per_epoch} "
+                    f"micro_batch {batch_idx + 1}/{n_batches} "
                     f"global_step={global_step} loss={step_loss:.4g} "
-                    f"steps/s={steps_per_second:.3f} "
+                    f"micro_batches/s={micro_batches_per_second:.3f} "
                     f"samples/s={samples_per_second:.2f}"
                 )
             interval_t0 = time.perf_counter()
             interval_step0 = global_step
+            interval_microstep0 = batch_idx + 1
+            interval_acc_iter0 = acc_iter
 
     return metrics.compute().item(), acc_iter, global_step
 

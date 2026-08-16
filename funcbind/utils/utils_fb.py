@@ -93,9 +93,14 @@ def load_funcbind(
     acc_iter = checkpoint.get("acc_iter", 0)
     effective_batch = max(
         1,
-        int(config["dset"]["batch_size"]) * int(getattr(fabric, "world_size", 1)),
+        int(config["dset"]["batch_size"])
+        * int(getattr(fabric, "world_size", 1))
+        * max(1, int(config.get("accum_steps", 1))),
     )
     global_step = int(checkpoint.get("global_step", acc_iter // effective_batch))
+    # Checkpoints written before best_res was persisted fall back to the same sentinel
+    # train_fb uses for a cold start, so the first validation sets the bar as before.
+    best_res = float(checkpoint.get("best_res", 1e10))
 
     if train:
         if return_global_step:
@@ -106,6 +111,7 @@ def load_funcbind(
                 code_stats,
                 acc_iter,
                 global_step,
+                best_res,
             )
         return model, model_ema, checkpoint["optimizer"], code_stats, acc_iter
     else:
@@ -117,7 +123,11 @@ def learning_rate_schedule(optimizer, iteration, config, world_size=1):
         return config["lr"]
     ref_lr = config["lr"]
     ref_batches = config["ref_batches"]
-    batch_size = config["dset"]["batch_size"] * world_size
+    batch_size = (
+        config["dset"]["batch_size"]
+        * world_size
+        * max(1, int(config.get("accum_steps", 1)))
+    )
     lr = ref_lr
     if ref_batches > 0:
         lr /= np.sqrt(max(iteration / (ref_batches * batch_size), 1))

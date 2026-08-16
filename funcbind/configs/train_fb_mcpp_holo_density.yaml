@@ -20,6 +20,10 @@ wandb_tags:
   - prefetch4
   - out_of_order
   - exact_step_logging
+  - val_every_epoch
+  - checkpoint_every_epoch
+  - grad_accum27
+  - effective_batch756
 seed: 1234
 nf_pretrained_path: /home1/irteam/funcbind/exps/neural_field/nf_unified
 
@@ -56,7 +60,8 @@ denoiser:
   cfg_dropout: 0.1
 
 sample_every: 10
-val_every: 5
+val_every: 1
+checkpoint_every: 1
 
 # Full FuncBind fine-tuning from the baseline checkpoint; the encoder trunk stays frozen.
 lr: 0.001
@@ -65,7 +70,8 @@ use_lr_schedule: true
 ref_batches: 20040
 ema_decay: 0.9999
 ema_stds: [0.05]
-log_every_steps: 25
+accum_steps: 27
+log_every_steps: 1
 gpu_type: b200
 
 performance:

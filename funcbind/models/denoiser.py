@@ -53,8 +53,10 @@ class FuncBind(torch.nn.Module):
         )
 
         # ---- frozen CDG density conditioning (zero-init, off by default) ----------
-        # Mirrors VoxBind's `protein_first`: the frozen encoder feeds the RECEPTOR
-        # representation only, through a zero conv, so step 0 == the density-free model.
+        # The frozen encoder feeds the RECEPTOR representation through a zero conv, so
+        # step 0 == the density-free model. denoiser.density.fusion picks what the
+        # projection is conditioned on (density_only / protein_first / default) -- see
+        # density_condition.py; `default` is VoxBind's benchmark-winning variant.
         dcfg = config["denoiser"].get("density", None)
         self.with_density = bool(config["denoiser"].get("with_density", False))
         self.density_condition = None
@@ -76,11 +78,13 @@ class FuncBind(torch.nn.Module):
                 # of being stretched over the whole box.
                 latent_extent=(config["dset"]["grid_dim"] * config["dset"]["resolution"]
                                if dcfg.get("spatial_align", True) else None),
+                fusion=str(dcfg.get("fusion", "density_only")),
             )
             n_frozen = sum(p.numel() for p in self.density_condition.encoder.parameters())
             n_train = sum(p.numel() for p in self.density_condition.proj.parameters())
             fabric.print(f">> density encoder frozen ({n_frozen:,} params), "
-                         f"zero-init proj ({n_train:,} trainable)")
+                         f"zero-init proj ({n_train:,} trainable), "
+                         f"fusion={self.density_condition.fusion}")
             if self.density_condition.latent_extent is not None:
                 n_cells = self.density_condition._n_latent_cells()
                 fabric.print(f">> density registered on the central {n_cells}^3 of the "
@@ -101,15 +105,34 @@ class FuncBind(torch.nn.Module):
         receptor_encoding: torch.Tensor,
         density_input: torch.Tensor = None,
         density_available: torch.Tensor = None,
+        ligand_in: torch.Tensor = None,
     ) -> torch.Tensor:
-        """Add the masked density residual, preserving an exact baseline no-op."""
+        """Add the masked density residual, preserving an exact baseline no-op.
+
+        `ligand_in` is the preconditioned ligand the UNet consumes, and it is required
+        only by the `default` fusion, whose whole point is that the density correction
+        may depend on the noisy generation target.
+        """
         if self.density_condition is None or density_input is None:
             return receptor_encoding
         from funcbind.models.density_condition import apply_density_residual
-        delta = self.density_condition(density_input)
+        mode = self.density_condition.fusion
+        if mode == "density_only":
+            cond = None
+        elif mode == "protein_first":
+            cond = receptor_encoding
+        else:  # "default" -- VoxBind feeds the projection the lig+poc SUM, not a concat
+            if ligand_in is None:
+                raise ValueError("fusion='default' needs the preconditioned ligand input")
+            cond = receptor_encoding + ligand_in
+        delta = self.density_condition(density_input, cond=cond)
         return apply_density_residual(
             receptor_encoding, delta, density_available
         )
+
+    @property
+    def density_fusion(self) -> str:
+        return "none" if self.density_condition is None else self.density_condition.fusion
 
     def forward(
         self,
@@ -131,9 +154,15 @@ class FuncBind(torch.nn.Module):
         # Zero-init residual: identity at step 0, so enabling density cannot regress the
         # baseline at initialisation. The availability mask keeps missing-map examples
         # exactly on the density-free path even after the projection learns a bias.
-        receptor_encoding = self.fuse_density_condition(
-            receptor_encoding, density_input, density_available
-        )
+        #
+        # `default` conditions the projection on the noisy ligand, so it can only run once
+        # that ligand has been preconditioned -- it is fused inside the branches below.
+        # The other modes do not depend on the ligand and stay here, where they always were.
+        fuse_after_precond = self.density_fusion == "default"
+        if not fuse_after_precond:
+            receptor_encoding = self.fuse_density_condition(
+                receptor_encoding, density_input, density_available
+            )
 
         classes = None if self.class_dim == 0 else torch.zeros([1, self.class_dim], device=self.device) if classes is None else classes.to(torch.float32).reshape(-1, self.class_dim)
 
@@ -147,9 +176,20 @@ class FuncBind(torch.nn.Module):
 
             # forward unet
             x_in = (c_in * ligand_encoding)
+            if fuse_after_precond:
+                receptor_encoding = self.fuse_density_condition(
+                    receptor_encoding, density_input, density_available, ligand_in=x_in
+                )
             F_x = self.unet3d(x_in, receptor_encoding, c_noise, classes=classes, cfg_dropout=self.cfg_dropout if cfg_dropout else 0.0)
             D_x = c_skip * ligand_encoding + c_out * F_x
         else:
+            if fuse_after_precond:
+                # No preconditioning: the UNet consumes the raw code, so that is the
+                # ligand the projection should see.
+                receptor_encoding = self.fuse_density_condition(
+                    receptor_encoding, density_input, density_available,
+                    ligand_in=ligand_encoding,
+                )
             D_x = self.unet3d(ligand_encoding, receptor_encoding, sigma, classes=classes, cfg_dropout=self.cfg_dropout if cfg_dropout else 0.0)
 
         # Estimate uncertainty if requested.

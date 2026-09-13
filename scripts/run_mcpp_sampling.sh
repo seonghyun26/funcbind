@@ -31,18 +31,26 @@ SEED=${SEED:-1}
 # 110 wants ~110 GiB, which does not fit an H200 that is shared with another job.
 BSRC=${BSRC:-16}      # sampling.batch_size_render_codes
 BSR=${BSR:-1000}      # sampling.batch_size_render
+# Which model to sample. Default = the density-free MCP FuncBind ("vanilla").
+# The receptor-ED ControlNet fine-tune needs BOTH overrides together: its
+# architecture comes from the checkpoint's own config, but the sampling config
+# supplies the holo-density dataset wiring (mcpp_holo_density_dir, voxbind root).
+#   CONFIG=sample_fb_mcpp_holo_density \
+#   FB_PATH=$REPO/exps/funcbind/20260816_..._resumed_bsz6_ga32_r3
+CONFIG=${CONFIG:-sample_fb_mcpp}
+FB_PATH=${FB_PATH:-$REPO/exps/funcbind/fb_unified}
 
 OUT="$REPO/artifacts/reproduction/mcpp/$NAME"
-export NAME IDS NTARGETS GPU NPR NCHAINS NATT SEED BSRC BSR
+export NAME IDS NTARGETS GPU NPR NCHAINS NATT SEED BSRC BSR CONFIG FB_PATH
 
 if [[ ${MCPP_RUNNER:-0} == 1 ]]; then
     cd "$REPO/funcbind" || exit 1
     CUDA_VISIBLE_DEVICES="$GPU" "$PY" sample_fb.py \
-        --config-name sample_fb_mcpp \
+        --config-name "$CONFIG" \
         wandb=false \
         +n_devs=1 \
         +nf_pretrained_path="$REPO/exps/neural_field/nf_unified" \
-        fb_pretrained_path="$REPO/exps/funcbind/fb_unified" \
+        fb_pretrained_path="$FB_PATH" \
         dirname="$OUT" \
         exp_name="mcpp_${NAME//\//_}" \
         seed="$SEED" \

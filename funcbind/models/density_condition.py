@@ -1,10 +1,26 @@
 """Frozen VoxBind CDG encoder as a zero-init conditioning branch for FuncBind.
 
-Mirrors the VoxBind `protein_first` fusion that is the only density arm to beat the
-density-free baseline on the 79-pocket CrossDocked benchmark: the frozen encoder feeds
-the RECEPTOR representation only, through a zero-initialised projection, so step 0 is
-bit-identical to the density-free model and the gradient is still non-zero (the input
-is not zero, only the projection is).
+The frozen encoder feeds the RECEPTOR representation through a zero-initialised
+projection, so step 0 is bit-identical to the density-free model and the gradient is
+still non-zero (the input is not zero, only the projection is).
+
+FUSION MODES. What separates VoxBind's fusion variants is not where the residual is
+added -- adding it to the pocket and then summing with the ligand is the same arithmetic
+as adding it to the sum -- but WHAT THE PROJECTION IS CONDITIONED ON:
+
+    density_only    proj(dens)                      the original FuncBind branch
+    protein_first   proj([receptor, dens])          VoxBind's protein_first
+    default         proj([receptor + ligand, dens]) VoxBind's default
+
+`default` is the variant that beat the density-free baseline on the 78-pocket CrossDocked
+benchmark (-8.45 vs -8.05); it is the only one whose correction can depend on the noisy
+generation target. `density_only` was this file's original behaviour, described in its
+first version as mirroring `protein_first` -- it does not: it sees neither the receptor
+nor the ligand. It is kept so the 3.17M / 8.21M / 26.1M checkpoints stay reproducible.
+
+Under `default` the ligand term is the PRECONDITIONED input c_in * ligand_encoding, which
+is what the UNet itself consumes, so the branch sees the ligand at the same scale the
+denoiser does. That forces the fusion to happen after preconditioning -- see denoiser.py.
 
 The encoder is the same 13-channel ChannelViT used by VoxBind:
     [7 ligand channels (all zero — unknown at generation time),
@@ -105,6 +121,7 @@ class DensityCondition(nn.Module):
         freeze: bool = True,
         amp: bool = True,
         latent_extent: float | None = None,
+        fusion: str = "density_only",
     ):
         super().__init__()
         self.encoder = build_density_encoder(density_cfg, voxbind_root)
@@ -119,8 +136,20 @@ class DensityCondition(nn.Module):
         self.density_extent = _GRID * _RES
         dim = int(density_cfg["dim"])
 
+        # Validate explicitly rather than falling through to a default: a typo here would
+        # silently train a different experiment for weeks, which is exactly the failure
+        # this run already had once.
+        _valid = ("density_only", "protein_first", "default")
+        self.fusion = str(fusion)
+        if self.fusion not in _valid:
+            raise ValueError(f"density fusion must be one of {_valid}, got {fusion!r}")
+        self.code_dim = int(code_dim)
+        # The conditioned modes concatenate a code_dim-wide tensor onto the encoder
+        # features before the projection; density_only keeps the original width.
+        in_ch = dim + (0 if self.fusion == "density_only" else self.code_dim)
+
         self.proj = nn.Sequential(
-            nn.Conv3d(dim, hidden, kernel_size=1),
+            nn.Conv3d(in_ch, hidden, kernel_size=1),
             nn.SiLU(),
             nn.Conv3d(hidden, hidden, kernel_size=3, padding=1),
             nn.SiLU(),
@@ -140,6 +169,15 @@ class DensityCondition(nn.Module):
     def _encode(self, density_input: torch.Tensor) -> torch.Tensor:
         """13-channel volume → (B, dim, g, g, g) feature map, under no_grad (frozen)."""
         enc = self.encoder
+        # amp=False means "run this trunk in fp32", but the caller sits inside Fabric's
+        # bf16 autocast and hands us a bf16 volume. Disabling autocast without casting the
+        # input leaves bf16 activations meeting fp32 weights, which is a hard error
+        # ("Input type (c10::BFloat16) and bias type (float) should be the same") on the
+        # very first batch. Match the input to the frozen weights instead.
+        if not self.amp:
+            enc_dtype = next(enc.parameters()).dtype
+            if density_input.dtype != enc_dtype:
+                density_input = density_input.to(enc_dtype)
         with torch.autocast(
             "cuda", dtype=torch.bfloat16, enabled=self.amp and density_input.is_cuda
         ):
@@ -167,7 +205,35 @@ class DensityCondition(nn.Module):
         n = int(round(self.density_extent / cell))
         return max(1, min(n, self.code_grid_dim))
 
-    def forward(self, density_input: torch.Tensor) -> torch.Tensor:
+    def _crop_cond(self, cond: torch.Tensor, n_cells: int) -> torch.Tensor:
+        """The central n_cells^3 of a code_grid_dim^3 conditioning tensor.
+
+        The projection runs on the cells the density crop actually covers, so whatever is
+        concatenated onto it has to be cropped to the same window -- otherwise the two
+        halves of the concatenation would describe different regions of the pocket.
+        """
+        if cond.shape[-1] == n_cells:
+            return cond
+        lo = (self.code_grid_dim - n_cells) // 2
+        return cond[:, :, lo:lo + n_cells, lo:lo + n_cells, lo:lo + n_cells]
+
+    def _with_cond(self, feat: torch.Tensor, cond: torch.Tensor | None,
+                   n_cells: int) -> torch.Tensor:
+        if self.fusion == "density_only":
+            return feat
+        if cond is None:
+            raise ValueError(
+                f"density fusion {self.fusion!r} needs a conditioning tensor; "
+                "the caller passed none"
+            )
+        if cond.shape[1] != self.code_dim:
+            raise ValueError(
+                f"conditioning tensor has {cond.shape[1]} channels, expected {self.code_dim}"
+            )
+        return torch.cat([self._crop_cond(cond, n_cells).to(feat.dtype), feat], dim=1)
+
+    def forward(self, density_input: torch.Tensor,
+                cond: torch.Tensor | None = None) -> torch.Tensor:
         feat = self._encode(density_input)
         if self.latent_extent is None:
             if feat.shape[-1] != self.code_grid_dim:
@@ -175,14 +241,14 @@ class DensityCondition(nn.Module):
                     feat, size=(self.code_grid_dim,) * 3, mode="trilinear",
                     align_corners=False,
                 )
-            return self.proj(feat)
+            return self.proj(self._with_cond(feat, cond, self.code_grid_dim))
 
         n_cells = self._n_latent_cells()
         if feat.shape[-1] != n_cells:
             feat = F.interpolate(
                 feat, size=(n_cells,) * 3, mode="trilinear", align_corners=False
             )
-        delta = self.proj(feat)
+        delta = self.proj(self._with_cond(feat, cond, n_cells))
         if n_cells == self.code_grid_dim:
             return delta
         # Project first, then place: the padding stays exactly zero instead of picking

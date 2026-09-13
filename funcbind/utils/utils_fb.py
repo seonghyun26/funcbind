@@ -101,6 +101,8 @@ def load_funcbind(
     # Checkpoints written before best_res was persisted fall back to the same sentinel
     # train_fb uses for a cold start, so the first validation sets the bar as before.
     best_res = float(checkpoint.get("best_res", 1e10))
+    # Saved as epoch + 1, i.e. the number of completed epochs = the next epoch to run.
+    epoch = int(checkpoint.get("epoch", 0))
 
     if train:
         if return_global_step:
@@ -112,6 +114,7 @@ def load_funcbind(
                 acc_iter,
                 global_step,
                 best_res,
+                epoch,
             )
         return model, model_ema, checkpoint["optimizer"], code_stats, acc_iter
     else:

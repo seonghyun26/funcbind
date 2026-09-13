@@ -33,7 +33,11 @@ SRC="${SRC:-$REPO/exps/funcbind/20260815_fb_mcpp_champion_receptor_ed_zeroinit_g
 RUN_DATE="${RUN_DATE:-$(date +%Y%m%d)}"
 EXP_NAME="${EXP_NAME:-${RUN_DATE}_fb_mcpp_champion_receptor_ed_zeroinit_resumed}"
 
-# Must match the source run, or the state_dict will not load onto the model.
+# Defaults only; the watchdog passes the live run's values. dset.batch_size does NOT
+# have to match the source run -- it reaches no parameter shape (441 state_dict
+# tensors, none batch-shaped) and train_fb.py uses it only to size the val loader and
+# to count acc_iter. acc_iter stays comparable because it counts samples seen, which
+# is what makes it the watchdog's batch-size-invariant ordering key.
 BATCH_SIZE="${BATCH_SIZE:-7}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 ACCUM_STEPS="${ACCUM_STEPS:-27}"
@@ -43,7 +47,47 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export WANDB_ENTITY="${WANDB_ENTITY:-eddy26}"
 export WANDB_PROJECT="${WANDB_PROJECT:-voxbind}"
-export TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}"
+# inductor shells out to a C compiler and finds none on PATH -- but the repro env
+# ships one (conda-forge gcc 15.2.0). Without CC set, torch.compile dies with
+# "Failed to find C compiler", which is what made 2026-08-24's first attempt look
+# like the box had no toolchain at all.
+if [ -z "${CC:-}" ] && [ -x "$REPO/.repro-env/bin/x86_64-conda-linux-gnu-gcc" ]; then
+    export CC="$REPO/.repro-env/bin/x86_64-conda-linux-gnu-gcc"
+    export CXX="$REPO/.repro-env/bin/x86_64-conda-linux-gnu-g++"
+fi
+
+# TORCHDYNAMO_DISABLE=1 would silently defeat performance.compile_backend, so the
+# default follows the config instead of fighting it: dynamo stays off when no backend
+# is requested (inductor cannot build here -- no cc/gcc/g++) and on when one is.
+# An explicit TORCHDYNAMO_DISABLE in the environment still wins.
+if [ -z "${TORCHDYNAMO_DISABLE:-}" ]; then
+    _cb="$("$PY" - "$REPO/funcbind/configs/$CONFIG.yaml" <<'PYCFG' 2>/dev/null || true
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print(str((c.get("performance") or {}).get("compile_backend", "") or ""))
+except Exception:
+    print("")
+PYCFG
+)"
+    if [ -n "$_cb" ]; then TORCHDYNAMO_DISABLE=0; else TORCHDYNAMO_DISABLE=1; fi
+fi
+export TORCHDYNAMO_DISABLE
+# The allocator carves fixed-size segments, so a long run ends up holding reserved
+# blocks it cannot hand back to a request of a different shape: r4 died with
+# 398.55 MiB reserved-but-unallocated while asking for 82 MiB. expandable_segments
+# lets those segments grow instead, which is exactly what the OOM message advises.
+# It reclaims fragmentation only -- the real headroom comes from bsz 6 -> 5.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# Pin glibc's allocation thresholds instead of letting it tune them. Every MCP
+# holo-density sample materializes a 144^3 float32 box (11.9 MiB) to crop 64^3
+# out of it. glibc serves the first such request with mmap, then -- because the
+# block was freed -- raises its dynamic mmap threshold to that size, so every
+# later box comes off the heap and is never handed back to the OS. Worker anon
+# memory grew a measured 39 GiB/h that way. Fixing both thresholds disables the
+# adjustment: the boxes stay mmap'd and munmap returns them at once.
+export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-131072}"
+export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID

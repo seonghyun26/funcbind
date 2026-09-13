@@ -193,6 +193,7 @@ def main(config):
     acc_iter = 0
     checkpoint_optimizer = None
     best_res = 1e10
+    start_epoch = 0
     if config["fb_pretrained_path"] is not None and os.path.exists(os.path.join(config["fb_pretrained_path"], "checkpoint.pth.tar")):
         fabric.print(f">> loading checkpoint from {config['fb_pretrained_path']}")
         (
@@ -203,6 +204,7 @@ def main(config):
             acc_iter,
             global_step,
             best_res,
+            start_epoch,
         ) = load_funcbind(
             config["fb_pretrained_path"],
             fabric=fabric,
@@ -215,6 +217,7 @@ def main(config):
             checkpoint_optimizer = None
             acc_iter = 0
             global_step = 0
+            start_epoch = 0
             # Fine-tuning from another run's weights: its best_res was measured against
             # a different objective, so carrying it over would suppress every save here.
             best_res = 1e10
@@ -243,6 +246,29 @@ def main(config):
     # optimizer and fabric
     ##############################
     optimizer = create_optimizer(funcbind, config, fabric)
+
+    # Optional graph capture. Measured 2026-08-24: a micro-batch took 1.53 s at bsz=5
+    # and 1.6 s at bsz=6 -- 17% less work for 6% less time -- while the loader workers
+    # sat at 9.5% CPU on do_poll and each rank's main thread burned ~a full core in
+    # user time. That is dispatch cost, not compute: a depth-18 UNet3D plus a 98.5M ViT
+    # issued kernel-by-kernel from Python. inductor cannot help here (no cc/gcc/g++ on
+    # this box, which is why TORCHDYNAMO_DISABLE is normally set), but the cudagraphs
+    # backend needs no compiler -- it replays the launches as one graph.
+    #
+    # Empty (default) leaves the model exactly as before.
+    compile_backend = str(config.get("performance", {}).get("compile_backend", "") or "")
+    if compile_backend:
+        # DDPOptimizer splits the graph at DDP bucket boundaries so allreduce can
+        # overlap compute. On this model it dies inside that splitter with
+        # "IndexError: list index out of range" (_dynamo/backends/distributed.py:614)
+        # before inductor is ever reached. Compiling the graph whole gives up that
+        # overlap, which costs little here: gradients sync once every accum_steps
+        # micro-batches, not every one.
+        import torch._dynamo
+        torch._dynamo.config.optimize_ddp = False
+        fabric.print(f">> torch.compile backend={compile_backend} (optimize_ddp=False)")
+        funcbind = torch.compile(funcbind, backend=compile_backend)
+
     funcbind, optimizer = fabric.setup(funcbind, optimizer)
     if checkpoint_optimizer is not None:
         fabric.print(">> loading optimizer state")
@@ -271,7 +297,11 @@ def main(config):
     ##############################
     fabric.print(">> start training the denoiser", config["exp_name"])
 
-    for epoch in range(0, config["num_epochs"]):
+    # A resume continues the epoch count (sampler shuffles, logs, saved "epoch") instead
+    # of restarting at 0; acc_iter/global_step already carried over.
+    if start_epoch:
+        fabric.print(f">> resuming at epoch {start_epoch}")
+    for epoch in range(start_epoch, config["num_epochs"]):
         t0 = time.time()
         if hasattr(loader_train.sampler, "set_epoch"):
             loader_train.sampler.set_epoch(epoch)

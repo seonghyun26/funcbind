@@ -1,0 +1,48 @@
+defaults:
+  - unet_edm2_XXXL
+  - _self_
+
+model_name: unet_edm2_XXXL_density_atomblob7_default
+
+# Frozen CDG (colour + density + gradmag) conditioning, zero-init -- the VoxBind recipe
+# that actually won the 78-pocket CrossDocked benchmark, ported whole:
+#   fusion  = default      (projection sees receptor + the noisy ligand, not density alone)
+#   encoder = atomblob7 v2.1 PLINDER pretrain, dim 512 / depth 12 / groups [7,4,1,1]
+#
+# The earlier arm (unet_edm2_XXXL_density.yaml) differs on BOTH: it conditions the
+# projection on density alone and plugs in the 100M champion (640/18, groups [7,4,2]).
+# It reached -8.33 Vina Dock against the density-free -9.34 over three checkpoints
+# spanning 8x in fine-tuning, never closing the gap. That file is kept untouched so the
+# 3.17M / 8.21M / 26.1M checkpoints stay reproducible.
+with_density: True
+
+density:
+  voxbind_python_root: /home1/irteam/VoxBind
+
+  # Geometry MUST match the checkpoint: load_state_dict is strict, and these are the
+  # values in the pretrain run's own cfg.yaml.
+  pretrained_path: /home1/irteam/VoxBind/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
+  patch: 8
+  dim: 512
+  depth: 12
+  heads: 8
+  mlp_ratio: 4
+  c_out: 16
+  pos_encoding: learnable
+  patch_embed_mode: channel_group
+  # Density and gradient magnitude are their OWN groups here, not one group of 2 as in
+  # the champion. This is a patch-embedding difference, so the two checkpoints are not
+  # interchangeable at fixed geometry.
+  channel_groups: [7, 4, 1, 1]
+
+  # What the zero-init projection is conditioned on. See funcbind/models/density_condition.py.
+  fusion: default
+
+  freeze: True
+  # fp32 on the trunk, matching the VoxBind arm this ports (density_encoder_amp: False).
+  # The champion arm ran the trunk in bf16; keep the winning recipe's setting rather than
+  # the previous run's.
+  encoder_amp: False
+  voxelizer_backend: torch
+  proj_hidden: 192
+  spatial_align: True

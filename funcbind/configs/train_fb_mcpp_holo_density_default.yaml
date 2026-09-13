@@ -1,6 +1,6 @@
 defaults:
   - dset: omni
-  - denoiser: unet_edm2_XXXL_density
+  - denoiser: unet_edm2_XXXL_density_atomblob7_default
   - sampling: sampling_xsmall
   - sampler: diffusion
   - override hydra/job_logging: custom
@@ -12,28 +12,33 @@ wandb_tags:
   - funcbind
   - mcpp
   - fusion
-  - champion
+  - atomblob7_v2p1_encoder
   - receptor_ed
   - full_holo_ed
   - zero_init
+  - fusion_default
   - non_oracle
   - prefetch4
   - out_of_order
   - exact_step_logging
   - val_every_epoch
   - checkpoint_every_epoch
-  - grad_accum27
-  - effective_batch756
+  - grad_accum38
+  - effective_batch760
 seed: 1234
 nf_pretrained_path: /home1/irteam/funcbind/exps/neural_field/nf_unified
 
-# Start exactly from the density-free MCP-capable FuncBind weights. The density
-# projection is absent from that checkpoint and remains its exact zero initialization.
+# Start exactly from the density-free MCP-capable FuncBind weights -- NOT from the
+# protein-first chain: its projection has a different input width (density-only, and the
+# champion's 640-dim encoder), so its weights do not transfer. This is a fresh fine-tune
+# of the same base, with the fusion and encoder the VoxBind benchmark actually favoured.
+# The density projection is absent from the base checkpoint and remains its exact zero
+# initialization, so step 0 is again bit-identical to the density-free model.
 fb_pretrained_path: /home1/irteam/funcbind/exps/funcbind/fb_unified
 resume_optimizer: false
 
 exp_dir: exps/funcbind
-exp_name: "fb_mcpp_holo_density_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
+exp_name: "fb_mcpp_holo_density_default_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
 dirname: "${exp_dir}/${exp_name}"
 receptor_dropout: false
 n_samples: null
@@ -77,7 +82,13 @@ use_lr_schedule: true
 ref_batches: 20040
 ema_decay: 0.9999
 ema_stds: [0.05]
-accum_steps: 27
+# 5 x 4 GPUs x 38 = 760, the effective batch the protein-first chain settled on after
+# bsz 6 hit the CUDA OOM ceiling. Held identical here so the LR schedule (decay onset =
+# ref_batches x effective_batch, measured in acc_iter) lines up with that run and the two
+# remain comparable. The new encoder is smaller (45.7M frozen vs 100M) but its trunk runs
+# fp32 rather than bf16, so the memory envelope is not obviously looser -- do not raise
+# the batch without re-measuring.
+accum_steps: 38
 log_every_steps: 1
 gpu_type: b200
 

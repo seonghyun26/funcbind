@@ -23,7 +23,7 @@
 #   FRESH_OPTIMIZER=1 scripts/resume_funcbind_receptor_ed.sh   # keep weights, reset optimizer
 set -uo pipefail
 
-REPO="${REPO:-/home1/irteam/funcbind}"
+REPO="${REPO:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 PY="${PY:-$REPO/.repro-env/bin/python}"
 GPUS="${GPUS:-0,1,2,3}"
 CONFIG="${CONFIG:-train_fb_mcpp_holo_density}"

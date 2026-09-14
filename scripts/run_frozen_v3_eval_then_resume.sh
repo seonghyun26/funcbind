@@ -18,8 +18,8 @@
 #   it watches for, so it is stopped here and re-armed at the end.
 set -uo pipefail
 
-FB=/home1/irteam/funcbind
-VB=/home1/irteam/VoxBind/voxbind
+FB="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
+VB="${VOXBIND_PYTHON_ROOT:-${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}}/voxbind"
 R4="$FB/exps/funcbind/20260816_fb_mcpp_champion_receptor_ed_zeroinit_resumed_bsz6_ga32_r4"
 CKPT="$R4/checkpoint.pth.tar"
 BASE_MTIME="${BASE_MTIME:-$(stat -c %Y "$CKPT")}"   # epoch-4 checkpoint, 2026-08-23 16:26:41

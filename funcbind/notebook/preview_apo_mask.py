@@ -8,6 +8,7 @@ also excludes receptor neighbourhoods, which moves the fill by a few hundredths.
 
 from __future__ import annotations
 
+import os
 import argparse
 import json
 from pathlib import Path
@@ -113,10 +114,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--crop",
         type=Path,
-        default=Path(
-            "/home1/irteam/VoxBind/voxbind/dataset/data/xray_crops_aligned_v5"
-            "/test/000069.npy"
-        ),
+        default=Path(os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind"))
+        / "voxbind/dataset/data/xray_crops_aligned_v5/test/000069.npy",
     )
     parser.add_argument(
         "--atoms",

@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 
 
-VOXBIND_ROOT = Path("/home1/irteam/VoxBind/voxbind")
+VOXBIND_ROOT = Path(os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind")) / "voxbind"
 if str(VOXBIND_ROOT) not in sys.path:
     sys.path.insert(0, str(VOXBIND_ROOT))
 

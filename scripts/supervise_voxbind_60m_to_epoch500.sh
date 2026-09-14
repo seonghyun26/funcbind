@@ -2,7 +2,7 @@
 set -u -o pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-voxbind_root="/home1/irteam/VoxBind/voxbind"
+voxbind_root="${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}/voxbind"
 runtime="${project_root}/.voxbind-env-backup/voxbind"
 experiment_name="voxbind_frozen_efficient60m_holo_xrayfull_20260729"
 experiment_dir="${voxbind_root}/exps/${experiment_name}"

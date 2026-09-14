@@ -23,7 +23,7 @@
 # still fires at 5400s, exactly as today.
 set -uo pipefail
 
-REPO=/home1/irteam/funcbind
+REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 EXPS="$REPO/exps/funcbind"
 BASE_NAME="${BASE_NAME:-20260816_fb_mcpp_champion_receptor_ed_zeroinit_resumed_bsz6_ga32}"
 CONFIG="${CONFIG:-train_fb_mcpp_holo_density}"

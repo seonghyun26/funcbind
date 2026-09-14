@@ -60,9 +60,9 @@ density:
   target_index: 69
   pdb_id: 5mgl
   ligand_id: 7mu
-  crop_path: /home1/irteam/VoxBind/voxbind/dataset/data/xray_crops_aligned_v5/test/000069.npy
-  encoder_checkpoint: /home1/irteam/VoxBind/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
-  voxbind_python_root: /home1/irteam/VoxBind
+  crop_path: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}/voxbind/dataset/data/xray_crops_aligned_v5/test/000069.npy
+  encoder_checkpoint: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
+  voxbind_python_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}
   overfit_steps: 300
   learning_rate: 0.001
   weight_decay: 0.0001

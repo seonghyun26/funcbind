@@ -9,7 +9,7 @@ defaults:
 debug: False
 wandb: True
 seed: 1234
-exp_dir: exps/neural_field
+exp_dir: ${oc.env:NF_EXP_DIR,exps/neural_field}
 exp_name: "nf_${dset.input_dataset}_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
 dirname: "${exp_dir}/${exp_name}"
 nf_pretrained_path: null

@@ -31,14 +31,14 @@
 # and refuses to launch if that fails -- see test/v4_gpu_smoke.py.
 set -uo pipefail
 
-FB_REPO=/home1/irteam/funcbind
-VB_ROOT=/home1/irteam/VoxBind/voxbind
+FB_REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
+VB_ROOT="${VOXBIND_PYTHON_ROOT:-${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}}/voxbind"
 BASE_NAME="${BASE_NAME:-20260816_fb_mcpp_champion_receptor_ed_zeroinit_resumed_bsz6_ga32}"
 GAVE_UP="$FB_REPO/exps/funcbind/.watchdog_gave_up_${BASE_NAME}"
 WD_LOG="$FB_REPO/exps/funcbind/watchdog_${BASE_NAME}.log"
 
 EXP_NAME="${EXP_NAME:-voxbind_fusion_v4_newenc_receptor_ed_sig0.9}"
-ZOO="${ZOO:-/home1/irteam/VoxBind/voxbind/model_zoo}"
+ZOO="${ZOO:-${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}/voxbind/model_zoo}"
 # Newest encoder checkpoint present on 2026-08-23 (efficient_60m, 2026-07-29 13:35).
 # Anything newer is the encoder the user said they would upload; the dropbox zoo
 # watcher pulls it within its poll interval.

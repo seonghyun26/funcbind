@@ -15,7 +15,7 @@ docking run writes later (and with the cmp10 tables).
 """
 import argparse, json, os, sys, glob
 
-sys.path.insert(0, "/home1/irteam/VoxBind/voxbind/exps/frozenenc_probes")
+sys.path.insert(0, os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind") + "/voxbind/exps/frozenenc_probes")
 import numpy as np
 from rdkit import Chem
 from run_docking_eval import (load_connected, n_raw, diversity, ref_similarity,

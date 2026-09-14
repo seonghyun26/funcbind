@@ -7,6 +7,7 @@ consumes.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -24,9 +25,8 @@ from funcbind.utils.constants import PADDING_INDEX
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HOLO_RUN = PROJECT_ROOT / "exps/density_fusion/holo_5mgl_target69_20260728"
-CROP = Path(
-    "/home1/irteam/VoxBind/voxbind/dataset/data/xray_crops_aligned_v5"
-    "/test/000069.npy"
+CROP = Path(os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind")) / (
+    "voxbind/dataset/data/xray_crops_aligned_v5/test/000069.npy"
 )
 GRID_DIM = 64
 RESOLUTION = 0.25

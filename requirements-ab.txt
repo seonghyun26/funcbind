@@ -1,0 +1,9 @@
+# Antibody-only extra. PyRosetta is needed exclusively by funcbind/metrics/metrics_ab.py
+# (interface_energy); the MCP and CrossDocked paths never call it, and utils_metrics
+# imports metrics_ab lazily, so leave this out unless you run the sabdab/diffab path.
+# ~2.7 GB, and COMMERCIAL USE REQUIRES A LICENCE (the import prints the notice).
+# NOTE the host: graylab.jhu.edu is unreachable from some boxes; conda.graylab.jhu.edu
+# and west.rosettacommons.org are mirrors that do resolve (the conda channel also
+# carries py312/py313 builds, which the wheel URLs below do not).
+pyrosetta @ https://graylab.jhu.edu/download/PyRosetta4/archive/release/PyRosetta4.Release.python311.linux.wheel/pyrosetta-2024.39+release.59628fb-cp311-cp311-linux_x86_64.whl ; python_full_version < '3.12' and sys_platform == 'linux'
+pyrosetta @ https://graylab.jhu.edu/download/PyRosetta4/archive/release/PyRosetta4.Release.python312.linux.wheel/pyrosetta-2024.39+release.59628fb-cp312-cp312-linux_x86_64.whl ; python_full_version >= '3.12' and sys_platform == 'linux'

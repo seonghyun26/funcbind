@@ -115,7 +115,7 @@ class DatasetOmni(Dataset):
         # Crops are named by their row in the shuffled data_train.pt, which is exactly
         # xdocked_source_index[i]; see dataset_crossdocked for why the two line up.
         self.density_crops_dir = config["dset"].get("density_crops_dir", "") or ""
-        self.voxbind_root = config["dset"].get("voxbind_python_root", "/home1/irteam/VoxBind")
+        self.voxbind_root = config["dset"].get("voxbind_python_root") or os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind")
         self.density_available = None
         if self.density_crops_dir:
             import numpy as np

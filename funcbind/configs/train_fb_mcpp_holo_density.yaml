@@ -24,14 +24,14 @@ wandb_tags:
   - grad_accum27
   - effective_batch756
 seed: 1234
-nf_pretrained_path: /home1/irteam/funcbind/exps/neural_field/nf_unified
+nf_pretrained_path: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/exps/neural_field/nf_unified
 
 # Start exactly from the density-free MCP-capable FuncBind weights. The density
 # projection is absent from that checkpoint and remains its exact zero initialization.
-fb_pretrained_path: /home1/irteam/funcbind/exps/funcbind/fb_unified
+fb_pretrained_path: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/exps/funcbind/fb_unified
 resume_optimizer: false
 
-exp_dir: exps/funcbind
+exp_dir: ${oc.env:FUNCBIND_EXP_DIR,exps/funcbind}
 exp_name: "fb_mcpp_holo_density_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
 dirname: "${exp_dir}/${exp_name}"
 receptor_dropout: false
@@ -39,13 +39,13 @@ n_samples: null
 
 num_epochs: 100000
 dset:
-  data_dir: /home1/irteam/funcbind/funcbind/dataset/data
+  data_dir: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/funcbind/dataset/data
   input_dataset: omni_v1
   use_single_dataset: mcpp
   data_aug: true
   rebalance: false
-  mcpp_holo_density_dir: /home1/irteam/funcbind/funcbind/dataset/data/mcpp_holo_xray_v1
-  voxbind_python_root: /home1/irteam/VoxBind
+  mcpp_holo_density_dir: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/funcbind/dataset/data/mcpp_holo_xray_v1
+  voxbind_python_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}
   batch_size: 8
   val_batch_size: 8
   num_workers: 8

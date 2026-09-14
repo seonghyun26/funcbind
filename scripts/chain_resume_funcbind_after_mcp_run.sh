@@ -17,7 +17,7 @@
 # every resume -- and continues into the next free _rN.
 set -uo pipefail
 
-REPO=/home1/irteam/funcbind
+REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 : "${RUN:?set RUN, e.g. cmp10_r14 (the dir under artifacts/reproduction/mcpp/)}"
 CMP="$REPO/artifacts/reproduction/mcpp/$RUN"
 CHUNKS=(ft_a ft_b ft_c ft_d)

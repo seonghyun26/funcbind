@@ -3,7 +3,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-voxbind_repository="${VOXBIND_REPOSITORY:-/home1/irteam/VoxBind}"
+voxbind_repository="${VOXBIND_REPOSITORY:-${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}}"
 voxbind_root="${VOXBIND_ROOT:-${voxbind_repository}/voxbind}"
 runtime="${VOXBIND_RUNTIME:-${project_root}/.repro-env}"
 model_zoo_root="${MODEL_ZOO_ROOT:-${voxbind_root}/model_zoo}"

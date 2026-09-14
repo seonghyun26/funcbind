@@ -9,7 +9,7 @@
 # this never hangs forever behind another job.
 set -uo pipefail
 
-REPO=/home1/irteam/funcbind
+REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 MINFREE=${MINFREE:-90000}          # MiB of free GPU memory required per chunk

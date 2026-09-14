@@ -17,8 +17,8 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export VOXBIND_RUNTIME="${project_root}/.voxbind-env-backup/voxbind"
 experiment_name="voxbind_frozen_efficient60m_holo_xrayfull_20260729"
-experiment_dir="/home1/irteam/VoxBind/voxbind/exps/${experiment_name}"
-model_zoo="/home1/irteam/VoxBind/voxbind/model_zoo"
+experiment_dir="${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}/voxbind/exps/${experiment_name}"
+model_zoo="${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}/voxbind/model_zoo"
 
 exec "${project_root}/scripts/train_voxbind.sh" \
     --model-zoo-root "${model_zoo}" \

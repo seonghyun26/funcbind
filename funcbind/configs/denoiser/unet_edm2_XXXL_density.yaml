@@ -10,11 +10,11 @@ model_name: unet_edm2_XXXL_density
 with_density: True
 
 density:
-  voxbind_python_root: /home1/irteam/VoxBind
+  voxbind_python_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}
 
   # Champion 100M ChannelViT used by the completed VoxBind receptor-ED zero-init
   # experiment. Keep the architecture fields in sync with its model-zoo config.
-  pretrained_path: /home1/irteam/VoxBind/voxbind/model_zoo/champion_100m_v2_mask075/checkpoint_e0049.pth.tar
+  pretrained_path: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}/voxbind/model_zoo/champion_100m_v2_mask075/checkpoint_e0049.pth.tar
   patch: 8
   dim: 640
   depth: 18

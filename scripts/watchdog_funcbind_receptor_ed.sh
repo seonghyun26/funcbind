@@ -32,7 +32,7 @@
 #   DRY_RUN=1 scripts/watchdog_funcbind_receptor_ed.sh    # report state, launch nothing
 set -uo pipefail
 
-REPO="${REPO:-/home1/irteam/funcbind}"
+REPO="${REPO:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 PY="${PY:-$REPO/.repro-env/bin/python}"
 CONFIG="${CONFIG:-train_fb_mcpp_holo_density}"
 EXPS="$REPO/exps/funcbind"

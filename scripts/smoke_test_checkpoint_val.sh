@@ -12,7 +12,7 @@
 #   EPOCHS=2 GPUS=1 scripts/smoke_test_checkpoint_val.sh
 set -uo pipefail
 
-REPO="${REPO:-/home1/irteam/funcbind}"
+REPO="${REPO:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 PY="${PY:-$REPO/.repro-env/bin/python}"
 GPUS="${GPUS:-0}"
 CONFIG="${CONFIG:-train_fb_mcpp_holo_density}"

@@ -57,9 +57,9 @@ density:
   # The first ten CrossDocked test targets that have an aligned density crop.
   # Chosen by index order rather than by result, so this is not a cherry-pick.
   target_indices: [2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
-  crop_root: /home1/irteam/VoxBind/voxbind/dataset/data/xray_crops_aligned_v5/test
-  encoder_checkpoint: /home1/irteam/VoxBind/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
-  voxbind_python_root: /home1/irteam/VoxBind
+  crop_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}/voxbind/dataset/data/xray_crops_aligned_v5/test
+  encoder_checkpoint: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
+  voxbind_python_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}
   full_render_chunk_size: 8192
   occupancy_point_threshold: 0.1
   density_point_threshold: 1.5

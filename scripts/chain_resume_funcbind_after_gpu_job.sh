@@ -20,7 +20,7 @@
 # so every restart would silently begin the fine-tune again from zero.
 set -uo pipefail
 
-REPO="${REPO:-/home1/irteam/funcbind}"
+REPO="${REPO:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 : "${BASE_NAME:?set BASE_NAME (the funcbind run to bring back)}"
 CONFIG="${CONFIG:-train_fb_mcpp_holo_density_default}"
 WAIT_PATTERN="${WAIT_PATTERN:?set WAIT_PATTERN, a pgrep -f pattern for the job to wait on}"

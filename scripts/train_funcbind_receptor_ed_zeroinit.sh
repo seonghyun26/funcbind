@@ -21,7 +21,7 @@
 #   SKIP_WAIT=1 scripts/train_funcbind_receptor_ed_zeroinit.sh  # run now
 set -uo pipefail
 
-REPO="${REPO:-/home1/irteam/funcbind}"
+REPO="${REPO:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 PY="${PY:-$REPO/.repro-env/bin/python}"
 GPUS="${GPUS:-0,1,2,3}"
 CONFIG="${CONFIG:-train_fb_mcpp_holo_density}"

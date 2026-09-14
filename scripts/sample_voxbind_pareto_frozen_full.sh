@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-voxbind_root="/home1/irteam/VoxBind/voxbind"
+voxbind_root="${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}/voxbind"
 runtime="${project_root}/.repro-env"
 experiment_name="voxbind_frozen_pareto100m_holo_xrayfull_20260728"
 experiment_dir="${project_root}/exps/voxbind/${experiment_name}"
@@ -21,7 +21,7 @@ fi
 
 mkdir -p "${sample_dir}"
 export CUDA_VISIBLE_DEVICES=0
-export PYTHONPATH="/home1/irteam/VoxBind${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS=4
 

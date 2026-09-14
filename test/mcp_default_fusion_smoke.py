@@ -13,17 +13,19 @@ Checks the four things that would otherwise surface as a dead multi-week run:
      depends on the ligand, which is the entire point of `default` over the
      density-only branch this replaces.
 
-    /home1/irteam/funcbind/.repro-env/bin/python test/mcp_default_fusion_smoke.py
+    <env>/bin/python test/mcp_default_fusion_smoke.py
 """
+import os
 import sys
 import torch
 
-sys.path.insert(0, "/home1/irteam/funcbind")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from funcbind.models.density_condition import DensityCondition
 
 DENS_CFG = dict(
-    voxbind_python_root="/home1/irteam/VoxBind",
-    pretrained_path="/home1/irteam/VoxBind/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar",
+    voxbind_python_root=os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind"),
+    pretrained_path=os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind")
+    + "/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar",
     patch=8, dim=512, depth=12, heads=8, mlp_ratio=4, c_out=16,
     pos_encoding="learnable", patch_embed_mode="channel_group",
     channel_groups=[7, 4, 1, 1],

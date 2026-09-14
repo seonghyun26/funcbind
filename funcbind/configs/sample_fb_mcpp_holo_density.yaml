@@ -17,11 +17,11 @@ out_dir: res
 save_dir: ${dirname}/samples/${out_dir}
 
 dset:
-  data_dir: /home1/irteam/funcbind/funcbind/dataset/data
+  data_dir: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/funcbind/dataset/data
   input_dataset: omni_v1
   use_single_dataset: mcpp
-  mcpp_holo_density_dir: /home1/irteam/funcbind/funcbind/dataset/data/mcpp_holo_xray_v1
-  voxbind_python_root: /home1/irteam/VoxBind
+  mcpp_holo_density_dir: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/funcbind/dataset/data/mcpp_holo_xray_v1
+  voxbind_python_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}
 
 denoiser:
   cfg_dropout: 0.0

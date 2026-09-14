@@ -17,11 +17,11 @@ model_name: unet_edm2_XXXL_density_atomblob7_default
 with_density: True
 
 density:
-  voxbind_python_root: /home1/irteam/VoxBind
+  voxbind_python_root: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}
 
   # Geometry MUST match the checkpoint: load_state_dict is strict, and these are the
   # values in the pretrain run's own cfg.yaml.
-  pretrained_path: /home1/irteam/VoxBind/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
+  pretrained_path: ${oc.env:VOXBIND_PYTHON_ROOT,/home1/irteam/VoxBind}/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar
   patch: 8
   dim: 512
   depth: 12

@@ -3,7 +3,7 @@
 # FuncBind baseline on all four GPUs.
 set -uo pipefail
 
-REPO="${REPO:-/home1/irteam/funcbind}"
+REPO="${REPO:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 VOXBIND_PID="${VOXBIND_PID:-1273140}"
 POLL_SECONDS="${POLL_SECONDS:-60}"
 PY="${PY:-$REPO/.repro-env/bin/python}"

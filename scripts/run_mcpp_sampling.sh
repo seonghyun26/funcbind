@@ -14,7 +14,7 @@
 # under .../$NAME/samples/target_XX/.
 set -uo pipefail
 
-REPO=/home1/irteam/funcbind
+REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 PY="$REPO/.repro-env/bin/python"
 
 : "${NAME:?set NAME (run label under artifacts/reproduction/mcpp/)}"

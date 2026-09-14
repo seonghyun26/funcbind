@@ -10,7 +10,7 @@ debug: False
 wandb: True
 seed: 1234
 nf_pretrained_path: exps/neural_field/nf_unified
-exp_dir: exps/funcbind
+exp_dir: ${oc.env:FUNCBIND_EXP_DIR,exps/funcbind}
 exp_name: "fb_${dset.input_dataset}_${now:%Y%m%d}_${now:%H%M%S}_${now:%f}"
 dirname: "${exp_dir}/${exp_name}"
 fb_pretrained_path: null

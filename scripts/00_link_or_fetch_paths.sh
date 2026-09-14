@@ -31,7 +31,7 @@ NO_FETCH="${NO_FETCH:-}"
 FORCE="${FORCE:-}"
 
 # Where the bytes already are on this box (the checkout that owns them today).
-FB_SRC_ROOT="${FB_SRC_ROOT:-/home1/irteam/funcbind}"
+FB_SRC_ROOT="${FB_SRC_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
 DATA_SRC="${FB_DATA_SRC:-$FB_SRC_ROOT/funcbind/dataset/data}"
 EXPS_SRC="${FB_EXPS_SRC:-$FB_SRC_ROOT/exps}"
 

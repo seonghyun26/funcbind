@@ -29,9 +29,8 @@ import scipy.ndimage
 
 DEFAULT_MCPP = Path(__file__).resolve().parent / "data" / "mcpp_dataset"
 DEFAULT_OUT = Path(__file__).resolve().parent / "data" / "mcpp_holo_xray_v1"
-DEFAULT_RECIPE = Path(
-    "/home1/irteam/VoxBind/voxbind/dataset/data/pretrain/"
-    "xray_resample_plinder_v2p1/resample.json"
+DEFAULT_RECIPE = Path(os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind")) / (
+    "voxbind/dataset/data/pretrain/xray_resample_plinder_v2p1/resample.json"
 )
 PDB_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
 CIF_URL = "https://files.rcsb.org/download/{pdb_id}.cif"

@@ -21,8 +21,8 @@
 # call already in that log instead of redoing it.
 set -uo pipefail
 
-FB=/home1/irteam/funcbind
-VB=/home1/irteam/VoxBind
+FB="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
+VB="${VOXBIND_PYTHON_ROOT:-${VOXBIND_PYTHON_ROOT:-/home1/irteam/VoxBind}}"
 : "${RUN:?set RUN, e.g. cmp10_r14 (the dir under artifacts/reproduction/mcpp/)}"
 ROOT="$FB/artifacts/reproduction/mcpp/$RUN"
 EVAL="$ROOT/_eval/finetuned"

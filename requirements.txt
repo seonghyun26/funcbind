@@ -110,8 +110,6 @@ pydantic==2.12.3 ; sys_platform == 'linux'
 pydantic-core==2.41.4 ; sys_platform == 'linux'
 pygments==2.19.2 ; sys_platform == 'linux'
 pyparsing==3.2.5 ; sys_platform == 'linux'
-pyrosetta @ https://graylab.jhu.edu/download/PyRosetta4/archive/release/PyRosetta4.Release.python311.linux.wheel/pyrosetta-2024.39+release.59628fb-cp311-cp311-linux_x86_64.whl ; python_full_version < '3.12' and sys_platform == 'linux'
-pyrosetta @ https://graylab.jhu.edu/download/PyRosetta4/archive/release/PyRosetta4.Release.python312.linux.wheel/pyrosetta-2024.39+release.59628fb-cp312-cp312-linux_x86_64.whl ; python_full_version >= '3.12' and sys_platform == 'linux'
 pytest==8.4.2 ; sys_platform == 'linux'
 pytest-timeout==2.4.0 ; sys_platform == 'linux'
 python-dateutil==2.9.0.post0 ; sys_platform == 'linux'
@@ -149,3 +147,26 @@ wandb==0.22.3 ; sys_platform == 'linux'
 wcwidth==0.2.14 ; sys_platform == 'linux'
 wheel==0.45.1 ; sys_platform == 'linux'
 yarl==1.22.0 ; sys_platform == 'linux'
+
+# --- added 2026-09-14 ------------------------------------------------------------
+# Present in the live .repro-env but absent from the uv export, so an env built from
+# this file alone samples but cannot DOCK: pdb2pqr/propka/mmcif-pdbx/docutils are the
+# docking path (metrics_crossdocked -> docking_vina), and docutils is pinned at 0.17.1
+# because pdb2pqr breaks on newer releases. gdown/beautifulsoup4/soupsieve/PySocks are
+# their transitive pulls, pinned to what the working env actually has.
+#
+# ANARCI is deliberately NOT here: the live env carries the bioconda build (1.3), not
+# the PyPI package (a different lineage), so install it with conda, e.g.
+#   micromamba install -c bioconda anarci
+beautifulsoup4==4.15.0 ; sys_platform == 'linux'
+docutils==0.17.1 ; sys_platform == 'linux'
+gdown==6.1.0 ; sys_platform == 'linux'
+mmcif-pdbx==2.1.0 ; sys_platform == 'linux'
+pdb2pqr==3.7.1 ; sys_platform == 'linux'
+propka==3.5.1 ; sys_platform == 'linux'
+PySocks==1.7.1 ; sys_platform == 'linux'
+soupsieve==2.9.1 ; sys_platform == 'linux'
+# pyrosetta moved to requirements-ab.txt (2026-09-14): it is reached only through
+# metrics_ab -> utils_rosetta.interface_energy, i.e. the ANTIBODY metrics, and that import
+# is now lazy, so MCP and CrossDocked runs no longer need it. Install it only for antibody
+# work:  pip install -r requirements-ab.txt

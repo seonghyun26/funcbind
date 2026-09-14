@@ -19,7 +19,7 @@ hardcoded list, so a chunk that sampled a different id set still lands correctly
 """
 import argparse, os, re, shutil, sys
 
-DATA = "/home1/irteam/funcbind/funcbind/dataset/data"
+DATA = os.environ.get("FUNCBIND_ROOT", "/home1/irteam/funcbind") + "/funcbind/dataset/data"
 LINE = re.compile(r"sampling receptor\s+(\S+?)/([^/]+)-protein\.pdb\s+#(\d+)")
 
 

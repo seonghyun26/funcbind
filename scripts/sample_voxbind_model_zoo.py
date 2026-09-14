@@ -14,6 +14,7 @@ disabled because this experiment intentionally tests holo-density generation.
 
 from __future__ import annotations
 
+import os
 import argparse
 import json
 import random
@@ -26,7 +27,7 @@ import torch
 from omegaconf import OmegaConf
 
 
-VOXBIND_PYTHON_ROOT = Path("/home1/irteam/VoxBind")
+VOXBIND_PYTHON_ROOT = Path(os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind"))
 VOXBIND_ROOT = VOXBIND_PYTHON_ROOT / "voxbind"
 if str(VOXBIND_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(VOXBIND_PYTHON_ROOT))

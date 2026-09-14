@@ -2,7 +2,6 @@ import os
 
 import numpy as np
 from funcbind.metrics.metrics import MetricsSampling
-from funcbind.metrics.metrics_ab import MetricsSamplingAb
 from funcbind.metrics.metrics_mcpp import MetricsSamplingMCPP
 from funcbind.utils.constants import PADDING_INDEX
 from funcbind.metrics.metrics_crossdocked import MetricsSamplingCrossDocked
@@ -17,6 +16,13 @@ def create_sampling_metrics(config, target_dirname=None, df_mol=None):
     if config["dset"]["input_dataset"] == "crossdocked_pocket10" or (config["dset"]["input_dataset"] == "omni_v1" and config["dset"]["use_single_dataset"] == "xdocked"):
         return MetricsSamplingCrossDocked(config, target_dirname)
     elif (config["dset"]["input_dataset"] == "omni_v1" and config["dset"]["use_single_dataset"] == "sabdab") or ("diffab" in config["dset"]["input_dataset"]):
+        # Imported inside the branch, not at module scope: metrics_ab reaches pyrosetta
+        # through utils_rosetta (2.7 GB, licence-gated), and `interface_energy` is called
+        # only from the antibody metrics. Keeping it at the top made every MCP and
+        # CrossDocked run -- and every image that ships them -- carry PyRosetta to satisfy
+        # an import it never executes.
+        from funcbind.metrics.metrics_ab import MetricsSamplingAb
+
         return MetricsSamplingAb(config, target_dirname)
     elif "mcpp" in config["dset"]["input_dataset"] or (config["dset"]["input_dataset"] == "omni_v1" and config["dset"]["use_single_dataset"] == "mcpp"):
         return MetricsSamplingMCPP(config, target_dirname, df_mol)

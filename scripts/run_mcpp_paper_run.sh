@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
-# Full MCP paper reproduction: 100 test targets x 100 samples, 25 targets per GPU.
+# Full MCP paper reproduction: 100 test targets x 100 samples on 8 H100 GPUs.
 #
-#   scripts/run_mcpp_paper_run.sh            # all 4 chunks
+#   scripts/run_mcpp_paper_run.sh            # all 8 chunks
 #   CHUNKS=0,1 scripts/run_mcpp_paper_run.sh # only gpu0 and gpu1
+#   DRY_RUN=1 scripts/run_mcpp_paper_run.sh  # print assignments only
 #
 # Each chunk is launched through run_mcpp_sampling.sh (detached, own run.log and
 # exit_code) once its GPU has MINFREE MiB free. Waiting is bounded by MAXWAIT so
 # this never hangs forever behind another job.
 set -uo pipefail
 
-REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
+REPO="${FUNCBIND_ROOT:-/home1/irteam/funcbind}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-MINFREE=${MINFREE:-90000}          # MiB of free GPU memory required per chunk
+MINFREE=${MINFREE:-70000}          # MiB of free GPU memory required per H100
 MAXWAIT=${MAXWAIT:-7200}           # seconds to wait per GPU before giving up
 STABLE=${STABLE:-3}                # consecutive OK checks before launching
 INTERVAL=${INTERVAL:-60}
-CHUNKS=${CHUNKS:-0,1,2,3}
+GPU_COUNT=${GPU_COUNT:-8}
+TOTAL_TARGETS=${TOTAL_TARGETS:-100}
+CHUNKS=${CHUNKS:-0,1,2,3,4,5,6,7}
+DRY_RUN=${DRY_RUN:-}
 RUN=${RUN:-paper_run}
 NPR=${NPR:-100}
 
@@ -24,11 +28,45 @@ LOG="$REPO/artifacts/reproduction/mcpp/$RUN/launcher.log"
 mkdir -p "$(dirname "$LOG")"
 say() { echo "[$(date -u +%H:%M:%SZ)] $*" | tee -a "$LOG"; }
 
-say "MCP reproduction: 100 targets, chunks=$CHUNKS, minfree=${MINFREE}MiB, npr=$NPR"
+if ! [[ "$GPU_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    say "GPU_COUNT must be a positive integer (got: $GPU_COUNT)"
+    exit 2
+fi
+if ! [[ "$TOTAL_TARGETS" =~ ^[1-9][0-9]*$ ]]; then
+    say "TOTAL_TARGETS must be a positive integer (got: $TOTAL_TARGETS)"
+    exit 2
+fi
+
+base_count=$((TOTAL_TARGETS / GPU_COUNT))
+remainder=$((TOTAL_TARGETS % GPU_COUNT))
+
+say "MCP reproduction: $TOTAL_TARGETS targets on $GPU_COUNT H100 GPUs, chunks=$CHUNKS, minfree=${MINFREE}MiB, npr=$NPR"
 
 for g in ${CHUNKS//,/ }; do
-    lo=$((g * 25)); hi=$((lo + 24))
+    if ! [[ "$g" =~ ^[0-9]+$ ]] || (( g >= GPU_COUNT )); then
+        say "invalid chunk '$g'; expected a GPU index from 0 to $((GPU_COUNT - 1))"
+        exit 2
+    fi
+
+    count=$base_count
+    if (( g < remainder )); then
+        count=$((count + 1))
+        lo=$((g * count))
+    else
+        lo=$((remainder * (base_count + 1) + (g - remainder) * base_count))
+    fi
+    if (( count == 0 )); then
+        say "gpu$g has no assigned targets - SKIPPING"
+        continue
+    fi
+
+    hi=$((lo + count - 1))
     ids="[$(seq -s, $lo $hi)]"
+
+    if [ -n "$DRY_RUN" ]; then
+        say "DRY_RUN gpu$g: targets $lo-$hi ($count)"
+        continue
+    fi
 
     ok=0; waited=0
     while (( ok < STABLE )); do
@@ -60,8 +98,8 @@ for g in ${CHUNKS//,/ }; do
     done
     (( ok < STABLE )) && continue
 
-    say "launching gpu$g targets $lo-$hi (25)"
-    NAME="$RUN/gpu$g" GPU="$g" IDS="$ids" NTARGETS=25 NPR="$NPR" \
+    say "launching gpu$g targets $lo-$hi ($count)"
+    NAME="$RUN/gpu$g" GPU="$g" IDS="$ids" NTARGETS="$count" NPR="$NPR" \
         "$HERE/run_mcpp_sampling.sh" 2>&1 | tee -a "$LOG"
 
     # confirm the chunk actually got past model load before moving to the next GPU

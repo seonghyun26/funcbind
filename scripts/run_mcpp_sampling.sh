@@ -7,15 +7,15 @@
 #
 #   smoke test : NAME=smoke GPU=2 IDS=[0] NTARGETS=1 NPR=8 NCHAINS=64 NATT=1 \
 #                  scripts/run_mcpp_sampling.sh
-#   paper chunk: NAME=paper_run/gpu0 GPU=0 IDS=[0,1,...,24] NTARGETS=25 \
+#   paper chunk: NAME=paper_run/gpu0 GPU=0 IDS=[0,1,...,12] NTARGETS=13 \
 #                  scripts/run_mcpp_sampling.sh
 #
 # Writes artifacts/reproduction/mcpp/$NAME/{run.log,exit_code} and the samples
 # under .../$NAME/samples/target_XX/.
 set -uo pipefail
 
-REPO="${FUNCBIND_ROOT:-${FUNCBIND_ROOT:-/home1/irteam/funcbind}}"
-PY="$REPO/.repro-env/bin/python"
+REPO="${FUNCBIND_ROOT:-/home1/irteam/funcbind}"
+PY="${PY:-${PYTHON_BIN:-$REPO/.repro-env/bin/python}}"
 
 : "${NAME:?set NAME (run label under artifacts/reproduction/mcpp/)}"
 : "${IDS:?set IDS, e.g. [0] or [0,1,2] (no spaces)}"
@@ -28,9 +28,12 @@ SEED=${SEED:-1}
 # Rendering chunk sizes. Both are pure batching knobs (decoder.py splits along
 # dim 0 / dim 1 and concatenates), so they change speed and memory, not results.
 # batch_size_render_codes costs ~1 GiB of GPU memory per code: the b200 preset of
-# 110 wants ~110 GiB, which does not fit an H200 that is shared with another job.
+# 110 wants ~110 GiB, which does not fit an 80 GiB H100.
 BSRC=${BSRC:-16}      # sampling.batch_size_render_codes
 BSR=${BSR:-1000}      # sampling.batch_size_render
+# sampling_large.yaml has no H100 preset. The a100 preset is the conservative
+# CUDA-compatible base; BSRC and BSR above explicitly set the batching limits.
+GPU_TYPE=${GPU_TYPE:-a100}
 # Which model to sample. Default = the density-free MCP FuncBind ("vanilla").
 # The receptor-ED ControlNet fine-tune needs BOTH overrides together: its
 # architecture comes from the checkpoint's own config, but the sampling config
@@ -41,7 +44,12 @@ CONFIG=${CONFIG:-sample_fb_mcpp}
 FB_PATH=${FB_PATH:-$REPO/exps/funcbind/fb_unified}
 
 OUT="$REPO/artifacts/reproduction/mcpp/$NAME"
-export NAME IDS NTARGETS GPU NPR NCHAINS NATT SEED BSRC BSR CONFIG FB_PATH
+export NAME IDS NTARGETS GPU NPR NCHAINS NATT SEED BSRC BSR GPU_TYPE CONFIG FB_PATH
+
+if [ ! -x "$PY" ]; then
+    echo "Python executable not found or not executable: $PY" >&2
+    exit 2
+fi
 
 if [[ ${MCPP_RUNNER:-0} == 1 ]]; then
     cd "$REPO/funcbind" || exit 1
@@ -54,7 +62,7 @@ if [[ ${MCPP_RUNNER:-0} == 1 ]]; then
         dirname="$OUT" \
         exp_name="mcpp_${NAME//\//_}" \
         seed="$SEED" \
-        gpu_type=b200 \
+        gpu_type="$GPU_TYPE" \
         sampling.n_targets="$NTARGETS" \
         sampling.n_samples_per_receptor="$NPR" \
         sampling.n_chains="$NCHAINS" \

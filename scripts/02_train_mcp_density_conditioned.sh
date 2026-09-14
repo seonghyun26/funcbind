@@ -42,9 +42,11 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES="$GPUS"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
-# Containers without a C compiler cannot build inductor kernels; the compiled neural-field
-# encoder then dies on the first batch. Eager is the safe default -- unset if yours has cc.
-export TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}"
+# Whether to compile follows the CONFIG -- see scripts/lib/dynamo_env.sh. On the H200 box
+# compiling is 1.20x faster (13.66 -> 16.42 samples/s), and inductor builds against the
+# venv's own conda toolchain even though the container ships no cc. On a box without either,
+# set TORCHDYNAMO_DISABLE=1 in the environment and this defers to it.
+source "$REPO/scripts/lib/dynamo_env.sh"
 # Loader threads are deliberately modest: oversubscribing the CPU quota starves the loaders
 # and the GPUs idle (measured: 14.2 -> 6.6 samples/s when a 52-core job shared 32 cores).
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"

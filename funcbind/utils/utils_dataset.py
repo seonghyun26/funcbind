@@ -1,3 +1,4 @@
+import inspect
 import itertools
 import random
 from typing import List
@@ -13,6 +14,15 @@ from typing import Iterable, List, Sized
 
 class SizedIterable(Sized, Iterable, metaclass=ABCMeta):
     pass
+
+
+# `in_order` is a DataLoader argument only from torch 2.6; on 2.5 and older, passing it
+# raises TypeError before a single batch is read. Probe the signature instead of parsing
+# a version string so a backport or a fork is judged by what it actually accepts.
+_DATALOADER_ACCEPTS_IN_ORDER = "in_order" in inspect.signature(
+    torch.utils.data.DataLoader.__init__
+).parameters
+_warned_no_in_order = False
 
 
 ################################################################################
@@ -72,15 +82,27 @@ def create_field_loaders(
         loader_kwargs.update(
             persistent_workers=bool(config["dset"].get("persistent_workers", True)),
             prefetch_factor=int(config["dset"].get("prefetch_factor", 4)),
-            # Training samples can vary substantially in CPU crop/resampling cost.
-            # Consume the first ready worker result instead of letting one slow crop
-            # block already-prepared batches behind it. Keep evaluation deterministic.
-            in_order=(
-                bool(config["dset"].get("in_order", True))
-                if split == "train"
-                else True
-            ),
         )
+        # Training samples can vary substantially in CPU crop/resampling cost.
+        # Consume the first ready worker result instead of letting one slow crop
+        # block already-prepared batches behind it. Keep evaluation deterministic.
+        want_in_order = (
+            bool(config["dset"].get("in_order", True)) if split == "train" else True
+        )
+        if _DATALOADER_ACCEPTS_IN_ORDER:
+            loader_kwargs["in_order"] = want_in_order
+        elif not want_in_order:
+            # torch < 2.6 has no such knob and is always in-order. Say so once: the
+            # config asked for out-of-order consumption and will not get it, which
+            # costs throughput when one crop straggles.
+            global _warned_no_in_order
+            if not _warned_no_in_order:
+                _warned_no_in_order = True
+                fabric.print(
+                    f">> NOTE: dset.in_order=False ignored — torch {torch.__version__} "
+                    "has no DataLoader(in_order=...); needs torch >= 2.6. "
+                    "Loading stays in-order."
+                )
 
     loader = torch.utils.data.DataLoader(
         dset,

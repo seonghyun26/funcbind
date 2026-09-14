@@ -264,8 +264,11 @@ def main(config):
         # before inductor is ever reached. Compiling the graph whole gives up that
         # overlap, which costs little here: gradients sync once every accum_steps
         # micro-batches, not every one.
-        import torch._dynamo
-        torch._dynamo.config.optimize_ddp = False
+        # Bound under its own name on purpose: `import torch._dynamo` would bind `torch`
+        # as a LOCAL of main(), and every earlier `torch.` in this function -- the EMA
+        # block in the from-scratch branch, for one -- would then raise UnboundLocalError.
+        import torch._dynamo as torch_dynamo
+        torch_dynamo.config.optimize_ddp = False
         fabric.print(f">> torch.compile backend={compile_backend} (optimize_ddp=False)")
         funcbind = torch.compile(funcbind, backend=compile_backend)
 

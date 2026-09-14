@@ -38,9 +38,12 @@ export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 # back to the API key's own default entity.
 export WANDB_ENTITY="${WANDB_ENTITY:-eddy26}"
 export WANDB_PROJECT="${WANDB_PROJECT:-voxbind}"
-# This container ships no C compiler, so inductor cannot build its kernels and the
-# torch.compile'd neural-field encoder dies on the first batch. Eager it is.
-export TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}"
+# Whether to compile follows the CONFIG, not this launcher -- see scripts/lib/dynamo_env.sh.
+# This used to be a hardcoded =1 on the belief that the container has no C compiler. It has
+# none, but the venv ships its own toolchain, inductor builds fine with it, and compiling is
+# 1.20x faster here (13.66 -> 16.42 samples/s, measured). Hardcoding also made a run train
+# differently before and after a watchdog resume.
+source "$REPO/scripts/lib/dynamo_env.sh"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID

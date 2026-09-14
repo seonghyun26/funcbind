@@ -19,7 +19,6 @@ wandb_tags:
   - fusion_default
   - non_oracle
   - prefetch4
-  - out_of_order
   - exact_step_logging
   - val_every_epoch
   - checkpoint_every_epoch
@@ -64,7 +63,13 @@ dset:
   # respawn costs seconds against a ~12000 s epoch.
   persistent_workers: false
   prefetch_factor: 4
-  in_order: false
+  # NOTE: `in_order: false` used to sit here and never did anything. The loaders are
+  # built from config_nf, and update_config_nf (utils_nf.py) forwards a whitelist of
+  # dset keys that does not include in_order -- so the loader always read the default
+  # True. Measured before removing it: per-sample cost is nearly flat (median 28 ms,
+  # max 43 ms, 1.5x) and the loader runs ~70x faster than the GPUs consume, so
+  # out-of-order consumption had nothing to win here anyway. Re-adding the key alone
+  # will NOT work: it also has to be added to that whitelist.
   beta2: 0.95
 
 denoiser:

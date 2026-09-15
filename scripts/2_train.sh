@@ -11,6 +11,7 @@ export GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 export CONFIG="${CONFIG:-train_fb_mcpp_holo_density_h100}"
 export BATCH_SIZE="${BATCH_SIZE:-1}"
 export VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-1}"
+export NUM_WORKERS="${NUM_WORKERS:-2}"
 
 case "${SMOKE:-0}" in
     1|true|yes)

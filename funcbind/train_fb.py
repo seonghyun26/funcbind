@@ -156,7 +156,9 @@ def main(config):
     # val config
     config_val = copy.deepcopy(config)
     plot_bs = 10
-    config_val["sampling"]["batch_size_render"] *= 2 * (config_val["sampling"]["n_chains"] // plot_bs)  # bump up rendering batch size
+    render_multiplier = int(config.get("performance", {}).get(
+        "validation_render_multiplier", max(1, 2 * (config_val["sampling"]["n_chains"] // plot_bs))))
+    config_val["sampling"]["batch_size_render"] *= max(1, render_multiplier)
 
     # sampling config
     # config_sampling = copy.deepcopy(config_nf)
@@ -694,9 +696,9 @@ def train_denoiser(
     """
     metrics.reset()
     model.train()
-    optimizer.zero_grad(set_to_none=True)
-
     performance = config.get("performance", {})
+    set_to_none = bool(performance.get("zero_grad_set_to_none", True))
+    optimizer.zero_grad(set_to_none=set_to_none)
     prefetcher = _TrainBatchPrefetcher(
         loader,
         prepare=lambda batch: _prepare_train_batch(
@@ -782,7 +784,7 @@ def train_denoiser(
             continue
 
         optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none=set_to_none)
         global_step += 1
         optimizer_step_in_epoch += 1
 
@@ -805,6 +807,14 @@ def train_denoiser(
             steps_per_second = interval_steps / elapsed
             micro_batches_per_second = interval_microsteps / elapsed
             samples_per_second = interval_samples / elapsed
+            memory_suffix = ""
+            if torch.cuda.is_available():
+                # Every rank participates; show the worst GPU even with W&B off.
+                peaks = fabric.all_reduce(torch.tensor([
+                    torch.cuda.max_memory_allocated() / 1024**3,
+                    torch.cuda.max_memory_reserved() / 1024**3,
+                ], device=fabric.device), reduce_op="max").tolist()
+                memory_suffix = f" peak_alloc={peaks[0]:.2f}GiB peak_reserved={peaks[1]:.2f}GiB"
             if fabric.global_rank == 0:
                 progress = (batch_idx + 1) / max(n_batches, 1)
                 payload = {
@@ -845,7 +855,7 @@ def train_denoiser(
                     f"micro_batch {batch_idx + 1}/{n_batches} "
                     f"global_step={global_step} loss={step_loss:.4g} "
                     f"micro_batches/s={micro_batches_per_second:.3f} "
-                    f"samples/s={samples_per_second:.2f}"
+                    f"samples/s={samples_per_second:.2f}{memory_suffix}"
                 )
             interval_t0 = time.perf_counter()
             interval_step0 = global_step

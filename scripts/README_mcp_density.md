@@ -30,7 +30,7 @@ export NF_MODEL_URL='.../model.pt?dl=0'
 export FB_MODEL_URL='.../checkpoint.pth.tar?dl=0'
 export CDG_MODEL_URL='.../checkpoint_e0025.pth.tar?dl=0'
 
-docker run --rm -it --gpus all --shm-size=32g \
+docker run --rm -it --gpus all --shm-size=32g --cpus=32 --memory=256g \
   -e NF_MODEL_URL -e FB_MODEL_URL -e CDG_MODEL_URL \
   -e MCP_MODEL_URL -e MCP_MODEL_SHA256 \
   -v /path/to/funcbind-data:/workspace/FuncBind/funcbind/dataset/data \
@@ -42,6 +42,14 @@ docker run --rm -it --gpus all --shm-size=32g \
 
 Dropbox shared links need no rclone configuration. If a URL is omitted, the
 data script falls back to `ASSETS_SRC`, then a configured `rclone` remote.
+
+H100 target: one node with **8 x H100 80GB**, at least 32 CPU cores and preferably
+256 GiB host RAM allocated to the job (the example sets limits, not reservations).
+Keep at least 200 GiB free on the checkpoint volume after staging the input data
+and weights to allow a checkpoint replacement plus the safety reserve. Retaining
+older best checkpoints/shards needs additional space. Mount outputs on persistent
+storage, not the container layer. Ensure the container UID can write those mounts;
+the image also supports `--user UID:GID` with a writable working/output directory.
 
 ## 1. Download and process data
 
@@ -63,6 +71,11 @@ bash scripts/2_train.sh
 The default uses `bf16-mixed` on GPUs `0-7`, with train and validation batch
 size 1, accumulation 95 (effective batch 760), eager execution, and non-foreach
 AdamW. Model weights, gradients, optimizer moments, and EMA remain FP32.
+The H100 profile keeps DDP gradient bucket views across updates, uses two loader
+workers/GPU with CPU prefetch factor 2, and disables GPU prefetch. Validation
+renders one code at a time in chunks of 256 queries without the legacy 10x
+render-batch multiplier. All-rank peak allocated/reserved VRAM is printed in the
+training log even with W&B disabled. CUDA reserved memory includes allocator cache.
 
 The H100 profile wraps the existing AdamW in PyTorch ZeRO-1, keeps one FP32 EMA
 on rank-zero CPU, and recomputes UNet/receptor blocks during backward. Forced
@@ -75,6 +88,18 @@ Use `SMOKE=1 bash scripts/2_train.sh` on the target H100 node first. It uses the
 full model on a small data subset without saving a large checkpoint. CPU EMA
 needs ~19.2 GiB on rank zero and another ~19.2 GiB temporarily during evaluation,
 in addition to other host-memory requirements. EMA transfers may reduce speed.
+
+For a bounded accumulation check on the real H100 node, before the longer run:
+
+```bash
+SMOKE=1 N_SAMPLES=48 EFFECTIVE_BATCH=16 bash scripts/2_train.sh
+```
+
+This intentionally changes the effective batch only for the smoke (micro-batch 1,
+8 GPUs, accumulation 2). The regular command keeps effective batch 760. Inspect
+`exps/funcbind/fb_mcpp_holo_density_h100_smoke/run.log` for training AND validation
+completion and peak memory; then run the default `SMOKE=1` before a full job.
+Do not set `FORCE=1` to bypass an unresolved preflight failure.
 
 Checkpoints retain the standard model/EMA keys, so `3_generate.sh` reads them
 without optimizer shards. Resuming training requires `checkpoint.pth.tar` AND

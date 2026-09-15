@@ -15,7 +15,8 @@ checkpoint_reserve_gib: 30
 dset:
   batch_size: 1
   val_batch_size: 1
-  num_workers: 6
+  num_workers: 2
+  prefetch_factor: 2
 
 # 1 sample x 8 GPUs x 95 micro-batches = the reference effective batch 760.
 accum_steps: 95
@@ -32,3 +33,11 @@ performance:
   activation_checkpointing: true
   # Avoid holding the next GPU batch while the current backward is at its peak.
   gpu_prefetch: false
+  # Preserve DDP gradient bucket views across optimizer steps. Discarding them
+  # allocates another gradient-sized buffer during no_sync accumulation.
+  zero_grad_set_to_none: false
+  validation_render_multiplier: 1
+
+sampling:
+  batch_size_render: 256
+  batch_size_render_codes: 1

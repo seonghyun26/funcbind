@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--train-steps", type=int, default=3)
     parser.add_argument("--sample-steps", type=int, default=4)
     parser.add_argument("--devices", type=int, default=1)
+    parser.add_argument("--accum-steps", type=int, default=1)
     parser.add_argument("--prepared-root", type=Path,
                         help="Reuse data/ and density/ from an earlier one-target smoke; no downloads.")
     args = parser.parse_args()
@@ -57,6 +58,8 @@ def main():
     # three updates are needed to observe a gradient through the whole branch.
     if args.train_steps < 3 or args.sample_steps < 2:
         parser.error("at least three training steps and two sampling steps are required")
+    if args.accum_steps < 1:
+        parser.error("--accum-steps must be positive")
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     target = args.target.lower()
@@ -110,7 +113,7 @@ def main():
     os.environ["FUNCBIND_DENSITY_ENCODER"] = str(args.cdg_checkpoint.resolve())
     with initialize_config_dir(config_dir=str(REPO / "funcbind/configs"), version_base=None):
         cfg = compose(config_name="train_fb_mcpp_holo_density_h100", overrides=[
-            "wandb=false", "dset.data_aug=false", "dset.num_workers=0", "accum_steps=1",
+            "wandb=false", "dset.data_aug=false", "dset.num_workers=0", f"accum_steps={args.accum_steps}",
             "performance.gpu_prefetch=false", "denoiser.model_channels=32",
             "denoiser.ch_mults=[1,2]", "denoiser.n_blocks=1",
             "denoiser.attn_resolutions=[]", "denoiser.cfg_dropout=0",
@@ -185,7 +188,7 @@ def main():
         gradient_peaks.append(0.0 if grad is None else grad.abs().max().item())
     handle = optimizer.register_step_pre_hook(before_step)
     loss, samples_seen, steps = train_denoiser(
-        [batch] * args.train_steps, enc, dec_module, wrapped, wrapped_optimizer,
+        [batch] * (args.train_steps * args.accum_steps), enc, dec_module, wrapped, wrapped_optimizer,
         torchmetrics.MeanMetric().to(fabric.device), config, nf_config,
         model_ema=ema, fabric=fabric, field_maker=field,
         field_maker_receptor=receptor_field, num_classes=0, density_voxelizer=voxelizer,
@@ -210,7 +213,9 @@ def main():
     report["training"] = dict(steps=steps, samples_seen=samples_seen, loss=loss,
                               density_gradient_max=gradient_peaks, devices=fabric.world_size,
                               optimizer_sharding=config["performance"]["optimizer_sharding"],
-                              cpu_ema=True, activation_checkpointing=True)
+                              cpu_ema=True, activation_checkpointing=True,
+                              accum_steps=args.accum_steps,
+                              zero_grad_set_to_none=config["performance"]["zero_grad_set_to_none"])
 
     # All ranks save their local moments; main checkpoint remains sampler-readable.
     from funcbind.utils.training_state import save_training_state, load_cpu_checkpoint, restore_optimizer_state

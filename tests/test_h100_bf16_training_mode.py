@@ -29,6 +29,12 @@ def test_h100_config_preserves_mixed_precision(monkeypatch):
     assert config.performance.optimizer_sharding == "zero1"
     assert config.performance.ema_cpu
     assert config.performance.activation_checkpointing
+    assert not config.performance.zero_grad_set_to_none
+    assert config.performance.validation_render_multiplier == 1
+    assert config.dset.num_workers == 2
+    assert config.dset.prefetch_factor == 2
+    assert config.sampling.batch_size_render == 256
+    assert config.sampling.batch_size_render_codes == 1
 
 
 def test_mixed_bf16_adamw_and_ema_keep_fp32_state():

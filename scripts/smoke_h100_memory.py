@@ -24,7 +24,7 @@ def inputs(rank, step, micro, device):
 
 
 def update(fabric, model, optimizer, step, reference=False):
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad(set_to_none=False)
     for micro in range(2):
         ranks = range(fabric.world_size) if reference else [fabric.global_rank]
         for rank in ranks:
@@ -38,7 +38,7 @@ def update(fabric, model, optimizer, step, reference=False):
                     loss = (model(x).float() - y).square().mean() / 2
                     fabric.backward(loss)
     optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad(set_to_none=False)
 
 
 def run(fabric, args):

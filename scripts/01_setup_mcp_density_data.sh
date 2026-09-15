@@ -4,6 +4,7 @@
 #   bash scripts/01_setup_mcp_density_data.sh
 #   ASSETS_SRC=/mnt/share/funcbind_assets bash scripts/01_setup_mcp_density_data.sh   # from a local copy
 #   SKIP_BUILD=1 bash scripts/01_setup_mcp_density_data.sh                            # fetch only
+#   CHECK_LINKS_ONLY=1 bash scripts/1_data_process.sh   # 32 bytes/model; no files saved
 #   MCPP_INCLUDE_ORIGINAL=1 MCPP_EXTRACT_ORIGINAL=1 bash scripts/01_setup_mcp_density_data.sh
 #       # also fetch/extract the 32.7 GB public raw archive (requires much more free space)
 #
@@ -53,6 +54,16 @@ LIMIT="${LIMIT:-}"                             # e.g. LIMIT=5 for a smoke run
 
 say() { echo "[$(date --iso-8601=seconds)] [01-setup] $*"; }
 die() { say "ABORT: $*"; exit 1; }
+
+# Exit before dependency checks, dataset downloads, directory creation, or
+# existing-file shortcuts: this mode verifies the actual configured remote URLs.
+case "${CHECK_LINKS_ONLY:-0}" in
+    1|true|yes)
+        exec "$PY" "$REPO/scripts/check_mcp_asset_links.py"
+        ;;
+    0|false|no|'') ;;
+    *) die "CHECK_LINKS_ONLY must be 0 or 1" ;;
+esac
 
 say "repo=$REPO  voxbind=$VOXBIND_ROOT"
 say "train py=$PY"
@@ -185,4 +196,4 @@ else
 fi
 
 say "done. next: scripts/2_train.sh"
-say "run scripts/preflight_mcp_density.py first — on 80 GB cards it will tell you the recipe does not fit as-is"
+say "run scripts/preflight_mcp_density.py and the H100 smoke test before starting the full job"

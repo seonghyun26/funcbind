@@ -23,27 +23,29 @@ To select another existing base, set `VOXBIND_BASE=<image:tag>` when running
 
 ## Start the container
 
-Prepare persistent directories and model URLs. Copy
-[`mcp_assets.env.example`](mcp_assets.env.example) to `scripts/mcp_assets.env`,
-fill `CDG_MODEL_URL` with the separately supplied **file** link, and source it
-before starting Docker. The filled file is ignored by Git and the VoxBind Docker
-build context; do not commit private links or credentials.
+Prepare persistent directories and source
+[`mcp_assets.env.example`](mcp_assets.env.example) before starting Docker. It
+includes the public NF/FuncBind URLs and the approved CDG v2 download link.
+For local overrides, copy it to `scripts/mcp_assets.env`; that local file is
+ignored by Git and the VoxBind Docker build context. Do not commit checkpoints,
+private replacement links, or credentials.
 
 | Variable | Required checkpoint | Source | Size |
 |---|---|---|---|
 | `FB_MODEL_URL` | Density-free FuncBind fine-tuning start point | [Official FuncBind checkpoint](https://huggingface.co/mkirchmeyer/funcbind/resolve/f42d3daeb6e7c1fa2b20096f9a147aa3b1f8814f/fb_unified/checkpoint.pth.tar) | 61.68 GB |
 | `NF_MODEL_URL` | Pretrained neural-field encoder/decoder | [Official NF checkpoint](https://huggingface.co/mkirchmeyer/funcbind/resolve/f42d3daeb6e7c1fa2b20096f9a147aa3b1f8814f/nf_unified/model.pt) | 1.45 GB |
-| `CDG_MODEL_URL` | Frozen CDG v2 epoch-25 density encoder | Dropbox file link supplied separately; `VoxBind/results/task1-affinity/CDG-v2/checkpoint_e0025.pth.tar` | 1.19 GB |
+| `CDG_MODEL_URL` | Frozen CDG v2 epoch-25 density encoder | File-selected Dropbox URL in the example; `VoxBind/model_zoo/CDG_v2/checkpoint_e0025.pth.tar` | 1.19 GB |
 
 The example includes SHA-256 checksums for all three files. Public URLs were
-checked on 2026-09-15. The CDG file is uploaded; its link/access must be supplied
-separately. No new density-conditioned MCP checkpoint is required to start
+checked on 2026-09-15. The CDG folder URL selects the checkpoint with
+`preview=checkpoint_e0025.pth.tar&dl=1`: keep both parameters, or the folder ZIP
+may be downloaded instead of the checkpoint. No new density-conditioned MCP checkpoint is required to start
 fine-tuning. `MCP_MODEL_URL` is optional and only downloads a separately trained
 checkpoint for generation, not the density-free starting model.
 
 ```bash
-# On the host, from the VoxBind repository root, after filling the local copy:
-source FuncBind/scripts/mcp_assets.env
+# On the host, from the VoxBind repository root:
+source FuncBind/scripts/mcp_assets.env.example
 
 docker run --rm -it --gpus all --shm-size=32g --cpus=32 --memory=256g \
   -e NF_MODEL_URL -e FB_MODEL_URL -e CDG_MODEL_URL \
@@ -72,6 +74,24 @@ storage, not the container layer. Ensure the container UID can write those mount
 the image also supports `--user UID:GID` with a writable working/output directory.
 
 ## 1. Download and process data
+
+Optionally check only the remote model links first, without saving files or
+starting data preparation. This uses the same exported URLs as the download:
+
+```bash
+# Inside the container, with the model URL variables passed above:
+CHECK_LINKS_ONLY=1 bash scripts/1_data_process.sh
+# On the host, after sourcing the example (standard-library Python is enough):
+CHECK_LINKS_ONLY=1 PY=python3 bash FuncBind/scripts/1_data_process.sh
+```
+
+The check requests just 32 bytes/model (96 bytes total), requires HTTP 206,
+and verifies the filename, total size and PyTorch ZIP header. It closes the
+response without reading its body if the server ignores Range. This is **not**
+a full SHA-256 check or a model-loading test. Missing/invalid URLs exit nonzero;
+the check never falls through into full downloads, even if local models exist.
+
+To perform actual data preparation and full checkpoint downloads afterward:
 
 ```bash
 bash scripts/1_data_process.sh

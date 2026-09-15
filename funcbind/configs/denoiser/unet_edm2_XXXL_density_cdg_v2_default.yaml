@@ -1,0 +1,17 @@
+defaults:
+  - unet_edm2_XXXL_density
+  - _self_
+
+model_name: unet_edm2_XXXL_density_cdg_v2_default
+
+# CDG v2 epoch 25 is the representation checkpoint used by task1-affinity.  Keep it
+# separate from the historical atomblob7 and champion configs: the encoder geometry and
+# density normalization are part of the experiment definition.
+density:
+  pretrained_path: ${oc.env:FUNCBIND_DENSITY_ENCODER,/home1/irteam/VoxBind/voxbind/exps/260806_cdg_100m_v2_ep100/checkpoint_e0025.pth.tar}
+  dim: 640
+  depth: 18
+  heads: 10
+  channel_groups: [7, 4, 2]
+  fusion: default
+  encoder_amp: True

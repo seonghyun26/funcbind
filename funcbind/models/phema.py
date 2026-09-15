@@ -74,7 +74,8 @@ class PowerFunctionEMA(nn.Module):
         self.stds = stds
         self.foreach = foreach
         self.emas = [copy.deepcopy(net) for _std in stds]
-        self.to(net.device)
+        device = getattr(net, "device", next(net.parameters()).device)
+        self.to(device)
 
     @staticmethod
     def _parameter_buckets(net, ema):
@@ -87,9 +88,10 @@ class PowerFunctionEMA(nn.Module):
         return buckets.values()
 
     @torch.no_grad()
-    def to(self, device):
+    def to(self, *args, **kwargs):
         for ema in self.emas:
-            ema.to(device)
+            ema.to(*args, **kwargs)
+        return self
 
     @torch.no_grad()
     def reset(self):

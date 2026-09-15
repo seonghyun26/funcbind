@@ -54,6 +54,17 @@ def discover_targets(data_root: Path) -> list[str]:
     return sorted(targets)
 
 
+def resolve_structure_root(data_root: Path) -> tuple[Path, list[str]]:
+    """Accept both archive layouts: <root>/<pdb> and <root>/mcpp_dataset/<pdb>."""
+    candidates = (data_root, data_root / "mcpp_dataset")
+    for candidate in candidates:
+        if candidate.is_dir():
+            targets = discover_targets(candidate)
+            if targets:
+                return candidate, targets
+    return data_root, []
+
+
 def _download(url: str, destination: Path) -> tuple[bool, str]:
     if destination.exists() and destination.stat().st_size > 1024:
         return True, "cached"
@@ -527,6 +538,12 @@ def parse_args():
     parser.add_argument("--build-workers", type=int, default=8)
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument(
+        "--target",
+        action="append",
+        default=[],
+        help="process only this four-character PDB target (repeatable)",
+    )
     parser.add_argument("--limit", type=int, default=None)
     return parser.parse_args()
 
@@ -540,7 +557,17 @@ def main():
     if abs(args.resolution - 0.25) > 1e-8:
         raise ValueError("the pretrained encoder requires 0.25 A density resolution")
 
-    targets = discover_targets(args.data_root)
+    args.data_root, targets = resolve_structure_root(args.data_root)
+    if args.target:
+        requested = {target.lower() for target in args.target}
+        invalid = sorted(target for target in requested if len(target) != 4 or not target.isalnum())
+        if invalid:
+            raise ValueError(f"invalid four-character PDB target(s): {invalid}")
+        available = set(targets)
+        missing = sorted(requested - available)
+        if missing:
+            raise RuntimeError(f"requested target(s) absent under {args.data_root}: {missing}")
+        targets = sorted(requested)
     if args.limit is not None:
         targets = targets[: args.limit]
     if not targets:

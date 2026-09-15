@@ -1,5 +1,16 @@
 # VoxBind launch scripts
 
+For MCP density-conditioned FuncBind, use only these public entrypoints:
+
+1. `0_env_setup.sh`
+2. `1_data_process.sh`
+3. `2_train.sh`
+4. `3_generate.sh`
+
+See [`README_mcp_density.md`](README_mcp_density.md) for the short Docker workflow.
+
+## VoxBind training helpers
+
 Use two public launchers:
 
 - `train_voxbind.sh` validates and launches frozen-density VoxBind training.

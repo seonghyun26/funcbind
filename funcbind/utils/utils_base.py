@@ -53,6 +53,7 @@ def setup_fabric(config: dict, find_unused_parameters=False) -> L.Fabric:
 
     n_devs = config.get("n_devs") if "n_devs" in config else torch.cuda.device_count()
     n_nodes = int(os.environ.get("SLURM_NNODES", "1"))
+    precision = str(config.get("precision", "bf16-mixed"))
 
     torch.set_default_dtype(torch.float32)
     torch.set_float32_matmul_precision("high")
@@ -72,16 +73,22 @@ def setup_fabric(config: dict, find_unused_parameters=False) -> L.Fabric:
         )
     if n_devs >= 1:
         fabric = L.Fabric(
-            devices=n_devs, num_nodes=n_nodes, strategy=strat_, accelerator="gpu", loggers=[logger], precision="bf16-mixed"
+            devices=n_devs,
+            num_nodes=n_nodes,
+            strategy=strat_,
+            accelerator="gpu",
+            loggers=[logger],
+            precision=precision,
         )
     else:
-        fabric = L.Fabric(accelerator="cpu", loggers=[logger], precision="bf16-mixed")
+        fabric = L.Fabric(accelerator="cpu", loggers=[logger], precision=precision)
     fabric.launch()
     fabric.seed_everything(config["seed"])
     if config["wandb"]:
         fabric.log("start", True)  # dummy command to launch logging in wandb
     fabric.print(f"config:\n{OmegaConf.to_yaml(config)}")
     fabric.print(f"world_size: {fabric.world_size} = n_nodes: {n_nodes} x n_devs: {n_devs}")
+    fabric.print(f"precision: {precision}")
 
     return fabric
 

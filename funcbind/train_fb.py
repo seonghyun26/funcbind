@@ -273,6 +273,12 @@ def main(config):
         funcbind = torch.compile(funcbind, backend=compile_backend)
 
     funcbind, optimizer = fabric.setup(funcbind, optimizer)
+    # `bf16-true` casts the trainable model during Fabric setup. PowerFunctionEMA is
+    # deliberately kept outside DDP, so align its dtype explicitly: leaving it fp32
+    # both costs ~9.6 GiB/rank and makes foreach_lerp reject BF16 model parameters.
+    train_parameter = next(p for p in funcbind.parameters() if p.requires_grad)
+    funcbind_ema.to(device=train_parameter.device, dtype=train_parameter.dtype)
+    fabric.print(f">> EMA dtype aligned to {train_parameter.dtype}")
     if checkpoint_optimizer is not None:
         fabric.print(">> loading optimizer state")
         optimizer.load_state_dict(checkpoint_optimizer)
@@ -427,7 +433,10 @@ def main(config):
                     )
 
         checkpoint_every = max(1, int(config.get("checkpoint_every", 1)))
-        if (epoch + 1) % checkpoint_every == 0 or epoch == config["num_epochs"] - 1:
+        if bool(config.get("save_checkpoints", True)) and (
+            (epoch + 1) % checkpoint_every == 0
+            or epoch == config["num_epochs"] - 1
+        ):
             with fabric.rank_zero_first():
                 if fabric.global_rank == 0:
                     checkpoint_t0 = time.perf_counter()

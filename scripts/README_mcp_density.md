@@ -1,86 +1,112 @@
-# MCP density conditioning — porting the recipe to another box
+# MCP density-conditioned FuncBind
 
-Two scripts, run in order:
+Run the four entrypoints in order. Density fusion is `default`; the frozen
+encoder is CDG v2 epoch 25.
+
+## 0. Build the Docker image
+
+From the VoxBind repository root:
 
 ```bash
-bash scripts/01_setup_mcp_density_data.sh        # data + weights + holo-density build
-bash scripts/preflight_mcp_density.py            # will it run here?  ← read this one
-bash scripts/02_train_mcp_density_conditioned.sh # the conditioned fine-tune
+git submodule update --init --recursive FuncBind
+bash FuncBind/scripts/0_env_setup.sh
 ```
 
-## Read this before provisioning: 8×H100 80 GB does not fit
+The host `.repro-env` is not used. The Dockerfile creates the FuncBind Conda
+environment and its own `.repro-env` compatibility link, includes the current
+VoxBind CDG/voxelizer source, and runs `pip check` during the build. No host source
+mount is required. PyRosetta is an optional antibody dependency, not needed for MCP.
 
-FuncBind's denoiser is **5.14 B parameters**, and Fabric runs `bf16-mixed`, which keeps
-fp32 master weights. Per rank, before a single activation:
+The VoxBind base image must already exist (`voxbind:allinone` by default).
+To select another existing base, set `VOXBIND_BASE=<image:tag>` when running
+`0_env_setup.sh`. Data and checkpoints are mounted separately as shown below.
 
-| | bytes/param | GiB |
-|---|---:|---:|
-| params (fp32) | 4 | 19.2 |
-| grads (fp32) | 4 | 19.2 |
-| AdamW `exp_avg` + `exp_avg_sq` | 8 | 38.3 |
-| `PowerFunctionEMA` copy | 4 | 19.2 |
-| **static total** | **20** | **95.8** |
+## Start the container
 
-`setup_fabric` hardcodes **DDP**, which replicates every byte on every rank — so **more
-GPUs do not lower the per-GPU requirement**. 8×80 GB has exactly the same per-rank budget
-as 1×80 GB, and 95.8 GiB does not fit in 79.6 GiB. It runs here only because an H200 has
-139.8 GiB: measured usage is ~138 GiB at `batch_size=5`, i.e. 95.8 static + ~42 activations.
-Dropping the EMA saves 19.2 GiB and still leaves 76.6 GiB static — not enough.
+Prepare persistent directories and optional Dropbox shared-file URLs:
 
-Three ways to make 80 GB work, cheapest first:
+```bash
+export NF_MODEL_URL='.../model.pt?dl=0'
+export FB_MODEL_URL='.../checkpoint.pth.tar?dl=0'
+export CDG_MODEL_URL='.../checkpoint_e0025.pth.tar?dl=0'
 
-1. **`precision="bf16-true"`** → 47.9 GiB static. One line in
-   `funcbind/utils/utils_base.py:setup_fabric`. It halves all four rows, but it also puts
-   the AdamW moments of a 5 B model in bf16; treat it as an experiment, not a free win.
-2. **FSDP / ZeRO-3 across the ranks** → 95.8/N GiB (8 ranks: **12.0 GiB**), the right
-   answer for this shape. It is a real port: `setup_fabric` builds a `DDPStrategy`
-   unconditionally, and the manual gradient-accumulation loop, `PowerFunctionEMA`, and the
-   custom `AdamW(eps=0)` all need re-checking under sharding.
-3. **A smaller denoiser** — only `unet_edm2_XXXL` exists today, so this means authoring a
-   config and giving up comparability with every number measured so far.
+docker run --rm -it --gpus all --shm-size=32g \
+  -e NF_MODEL_URL -e FB_MODEL_URL -e CDG_MODEL_URL \
+  -e MCP_MODEL_URL -e MCP_MODEL_SHA256 \
+  -v /path/to/funcbind-data:/workspace/FuncBind/funcbind/dataset/data \
+  -v /path/to/funcbind-exps:/workspace/FuncBind/exps \
+  -v /path/to/funcbind-artifacts:/workspace/FuncBind/artifacts \
+  -v /path/to/voxbind-exps:/workspace/VoxBind/voxbind/exps \
+  voxbind-funcbind:sb
+```
 
-The preflight prints this table for the card it actually finds and fails rather than
-letting you discover it 20 minutes into a run. `FORCE=1` overrides it once you have made
-one of the changes above.
+Dropbox shared links need no rclone configuration. If a URL is omitted, the
+data script falls back to `ASSETS_SRC`, then a configured `rclone` remote.
 
-## What step 1 fetches, and from where
+## 1. Download and process data
 
-Public, no credentials — handled by `prepare_mcpp_holo_density.py` itself:
-coordinates from **RCSB**, 2Fo-Fc CCP4 maps from **PDBe**. Resumable; hours on a cold cache.
+```bash
+bash scripts/1_data_process.sh
+```
 
-Private — from `ASSETS_SRC=<dir>` you staged, else the lab Dropbox over `rclone`
-(`notebook/html/dropbox-sync.md`):
+This downloads the public MCP splits and original structures, then downloads
+RCSB coordinates and PDBe 2Fo-Fc maps and builds the X-ray density cache. It is
+resumable and refuses downloads that violate its free-space safety margin.
 
-| asset | why |
-|---|---|
-| `mcpp_dataset/` | MCP structures + `{train,val,test}_data.pt` |
-| `nf_unified/` | neural-field encoder/decoder |
-| `fb_unified/` | density-free MCP FuncBind — the fine-tune start point |
-| `atomblob7_v2p1_e0099.pth.tar` | the FROZEN density encoder |
-| VoxBind checkout | the branch imports `voxbind.models.density_vit` at runtime |
+## 2. Fine-tune
 
-The normalization constants live in `funcbind/dataset/recipes/xray_resample_plinder_v2p1.json`,
-vendored into this repo because the original sits under a gitignored `data/` dir and does
-not exist on a fresh checkout. They must match the encoder's pretraining — a differently
-normalized map is a different input distribution to a frozen trunk.
+```bash
+SMOKE=1 bash scripts/2_train.sh
+bash scripts/2_train.sh
+```
 
-## Things that bite
+The default uses `bf16-mixed` on GPUs `0-7`, with train and validation batch
+size 1, accumulation 95 (effective batch 760), eager execution, and non-foreach
+AdamW. Model weights, gradients, optimizer moments, and EMA remain FP32.
 
-* **Encoder geometry is not a preference.** `load_state_dict` is strict. atomblob7 v2.1 is
-  dim 512 / depth 12 / heads 8 / groups **[7,4,1,1]**; the 100 M champion is 640 / 18 / 10 /
-  **[7,4,2]**. Different groupings are different patch embeddings — the checkpoints are not
-  interchangeable at fixed geometry. The preflight checks dim and depth against the file.
-* **`encoder_amp: False` needs the input cast.** Fabric's outer bf16 autocast hands the
-  fp32 trunk a bf16 volume; without the cast it dies on batch 1 with
-  `Input type (c10::BFloat16) and bias type (float) should be the same`. Handled in
-  `density_condition._encode`.
-* **CPU quota starves the loaders.** A 52-core job sharing a 32-core container dropped
-  training from 14.2 to 6.6 samples/s with the GPUs at 4–23%. Check `nproc` against the
-  cgroup quota, not the host.
-* **Effective batch is part of the experiment.** The LR decay onset is
-  `ref_batches × effective_batch` in `acc_iter`, so step 2 derives `accum_steps` from your
-  batch size and GPU count to hold it at 760. On 8 GPUs, `BATCH_SIZE=5` gives exactly
-  760 (accum 19); other sizes may not divide evenly and the script says so.
-* **`fb_unified` carries `acc_iter = 87,214,080`.** Anything that ranks checkpoints by
-  `acc_iter` (the watchdog) will treat the base as permanently furthest along and restart
-  the fine-tune from scratch. Keep the base out of any resume-source ranking.
+**H100 80GB is blocked with the current plain DDP strategy.** Static state alone
+requires about 95.8 GiB per GPU before activations. DDP replicates that state on
+all eight GPUs, so lowering batch size cannot make it fit. Keeping mixed
+precision requires implementing FSDP/ZeRO sharding or CPU offload; this workflow
+does not yet provide either. The preflight will reject an H100 launch.
+
+On hardware with enough memory, use `SMOKE=1 bash scripts/2_train.sh` first;
+it runs one tiny epoch without writing the large training checkpoint.
+
+## 3. Generate
+
+Run one target first, then all 100 targets over eight GPUs:
+
+```bash
+SMOKE=1 bash scripts/3_generate.sh
+bash scripts/3_generate.sh
+```
+
+If using a separately distributed trained checkpoint, set `MCP_MODEL_URL`; it
+will be downloaded to the persistent FuncBind `exps` mount automatically.
+
+Useful overrides: `GPUS`, `EXP_NAME`, `FB_PATH`, `CHUNKS`, `NPR`, and `DRY_RUN`.
+
+## Small GPU smoke test
+
+Inside the container, with the original MCP reference files and checkpoints mounted:
+
+```bash
+python scripts/smoke_mcp_train_sample.py \
+  --out artifacts/mcp_train_sample_smoke --target 1bm2 \
+  --raw-root funcbind/dataset/data/mcpp_dataset \
+  --nf-checkpoint exps/neural_field/nf_unified/model.pt \
+  --fb-checkpoint exps/funcbind/fb_unified/checkpoint.pth.tar \
+  --cdg-checkpoint "$FUNCBIND_DENSITY_ENCODER" \
+  --voxbind-root "$VOXBIND_PYTHON_ROOT"
+```
+
+This downloads the public test split and deposited PDB/map, processes one density
+box, runs three production-loop training steps in `bf16-mixed`, and samples one
+latent with four diffusion steps before NF field decoding. It reuses the original
+MCP reference files and pretrained NF/CDG weights. Outputs are `report.json` and
+`sample.pt`. Use a fresh output directory to test fresh downloads.
+
+The denoiser is reduced and randomly initialized. This smoke uses a test example
+only to check the code path; it does not validate full-model training, atom/SDF
+generation, or molecular quality, and its outputs are not evaluation results.

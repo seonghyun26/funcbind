@@ -34,21 +34,44 @@ BSR=${BSR:-1000}      # sampling.batch_size_render
 # sampling_large.yaml has no H100 preset. The a100 preset is the conservative
 # CUDA-compatible base; BSRC and BSR above explicitly set the batching limits.
 GPU_TYPE=${GPU_TYPE:-a100}
-# Which model to sample. Default = the density-free MCP FuncBind ("vanilla").
-# The receptor-ED ControlNet fine-tune needs BOTH overrides together: its
-# architecture comes from the checkpoint's own config, but the sampling config
-# supplies the holo-density dataset wiring (mcpp_holo_density_dir, voxbind root).
-#   CONFIG=sample_fb_mcpp_holo_density \
-#   FB_PATH=$REPO/exps/funcbind/20260816_..._resumed_bsz6_ga32_r3
-CONFIG=${CONFIG:-sample_fb_mcpp}
-FB_PATH=${FB_PATH:-$REPO/exps/funcbind/fb_unified}
+# Density-conditioned MCP generation is the default. Override both values for
+# the density-free baseline:
+#   CONFIG=sample_fb_mcpp FB_PATH=$REPO/exps/funcbind/fb_unified
+CONFIG=${CONFIG:-sample_fb_mcpp_holo_density}
+FB_PATH=${FB_PATH:-$REPO/exps/funcbind/fb_mcpp_holo_density}
+MCP_AUTO_FETCH_MODEL=${MCP_AUTO_FETCH_MODEL:-1}
 
 OUT="$REPO/artifacts/reproduction/mcpp/$NAME"
-export NAME IDS NTARGETS GPU NPR NCHAINS NATT SEED BSRC BSR GPU_TYPE CONFIG FB_PATH
+export NAME IDS NTARGETS GPU NPR NCHAINS NATT SEED BSRC BSR GPU_TYPE CONFIG FB_PATH MCP_AUTO_FETCH_MODEL
 
 if [ ! -x "$PY" ]; then
     echo "Python executable not found or not executable: $PY" >&2
     exit 2
+fi
+
+for required_file in \
+    "$REPO/funcbind/dataset/data/mcpp_dataset/test_data.pt" \
+    "$REPO/exps/neural_field/nf_unified/model.pt"; do
+    if [ ! -f "$required_file" ]; then
+        echo "Required input missing: $required_file" >&2
+        exit 2
+    fi
+done
+
+if [ "$CONFIG" = sample_fb_mcpp_holo_density ]; then
+    density_dir="$REPO/funcbind/dataset/data/mcpp_holo_xray_v1"
+    if [ ! -d "$density_dir" ]; then
+        echo "MCP holo-density data missing: $density_dir" >&2
+        exit 2
+    fi
+    if [ ! -s "$FB_PATH/checkpoint.pth.tar" ]; then
+        if [ "$MCP_AUTO_FETCH_MODEL" = 1 ]; then
+            MCP_MODEL_DIR="$FB_PATH" "$REPO/scripts/pull_mcpp_density_model.sh"
+        else
+            echo "Density checkpoint missing: $FB_PATH/checkpoint.pth.tar" >&2
+            exit 2
+        fi
+    fi
 fi
 
 if [[ ${MCPP_RUNNER:-0} == 1 ]]; then

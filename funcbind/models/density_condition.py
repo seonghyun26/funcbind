@@ -175,9 +175,9 @@ class DensityCondition(nn.Module):
         # ("Input type (c10::BFloat16) and bias type (float) should be the same") on the
         # very first batch. Match the input to the frozen weights instead.
         if not self.amp:
-            enc_dtype = next(enc.parameters()).dtype
-            if density_input.dtype != enc_dtype:
-                density_input = density_input.to(enc_dtype)
+            first_parameter = next(enc.parameters(), None)
+            if first_parameter is not None and density_input.dtype != first_parameter.dtype:
+                density_input = density_input.to(first_parameter.dtype)
         with torch.autocast(
             "cuda", dtype=torch.bfloat16, enabled=self.amp and density_input.is_cuda
         ):

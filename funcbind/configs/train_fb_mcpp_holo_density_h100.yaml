@@ -1,0 +1,27 @@
+defaults:
+  - train_fb_mcpp_holo_density_default
+  - _self_
+
+# Preserve BF16 mixed precision: model, gradients, Adam moments, and EMA stay
+# FP32. Their ~95.8 GiB/rank static footprint does NOT fit H100 80 GB with the
+# current plain DDP strategy, even at batch 1. FSDP/ZeRO sharding or CPU offload
+# is required before launching on H100; the preflight should reject plain DDP.
+precision: bf16-mixed
+gpu_type: a100
+save_checkpoints: true
+
+dset:
+  batch_size: 1
+  val_batch_size: 1
+  num_workers: 6
+
+# 1 sample x 8 GPUs x 95 micro-batches = the reference effective batch 760.
+accum_steps: 95
+
+performance:
+  # Eager execution avoids extra compilation memory; it does not remove the
+  # static-state limit documented above.
+  compile_backend: ""
+  # The foreach AdamW implementation materializes full-size sqrt/denominator
+  # lists at optimizer.step(); process one parameter at a time on 80 GB cards.
+  optimizer_foreach: false

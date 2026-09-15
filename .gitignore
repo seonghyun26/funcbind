@@ -13,6 +13,7 @@ htmlcov/
 .venv/
 venv/
 env/
+.repro-env
 .repro-env/
 .python-version
 
@@ -24,6 +25,8 @@ dist/
 
 # Downloaded datasets, checkpoints, and reproduction artifacts
 /funcbind/dataset/data/
+/funcbind/exps/
+/funcbind/.runtime/
 /exps/
 /artifacts/
 *.aria2

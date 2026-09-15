@@ -1,0 +1,15 @@
+{
+  "_note": "Normalization constants used by the CDG v2 encoder (260806_cdg_100m_v2_ep100). Copied from VoxBind's xray_resample_plinder_v2_perelem/resample.json so a fresh FuncBind checkout does not depend on gitignored VoxBind data metadata.",
+  "frame": "deposited (transform=None): R=I, t=0",
+  "grid_dim": 64,
+  "kind": "resample_manifest",
+  "norm_version": "v6",
+  "normalization": {
+    "arcsinh_scale": 0.5,
+    "formula": "x' = (arcsinh(x / s) - mu_a) / sigma_a",
+    "mu_a": -0.015437547297403289,
+    "scheme": "pocket-pool arcsinh soft-squash + z-score (v6 stats, PLINDER)",
+    "sigma_a": 0.5084830820835629
+  },
+  "resolution": 0.25
+}

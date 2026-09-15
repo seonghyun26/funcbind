@@ -17,7 +17,6 @@ dependencies = [
     "torchmetrics>=1.6.3",
     "tqdm>=4.67.1",
     "wandb>=0.19.8",
-    "pyrosetta",
     "cpdb-protein>=0.2.0",
     "posecheck",
     "easydict>=1.13",
@@ -28,6 +27,11 @@ dependencies = [
     "einops>=0.8.1",
     "kaleido",
 ]
+
+[project.optional-dependencies]
+# MCP/CrossDocked import antibody metrics lazily. Install the pinned wheel from
+# requirements-ab.txt only for the antibody workflow.
+antibody = ["pyrosetta"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

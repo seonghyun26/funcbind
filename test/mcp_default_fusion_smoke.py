@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""GPU smoke test for the `default` density fusion + atomblob7 encoder.
+"""GPU smoke test for the `default` density fusion + CDG v2 encoder.
 
 Checks the four things that would otherwise surface as a dead multi-week run:
 
-  1. the atomblob7 v2.1 checkpoint loads into the geometry the config declares
+  1. the CDG v2 epoch-25 checkpoint loads into the geometry the config declares
      (load_state_dict is strict here -- a mismatch raises, it does not warn);
   2. the projection is wired to the conditioned width (encoder dim + code_dim);
   3. STEP-0 EQUIVALENCE -- with the zero-init projection the denoiser's output with
@@ -24,11 +24,13 @@ from funcbind.models.density_condition import DensityCondition
 
 DENS_CFG = dict(
     voxbind_python_root=os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind"),
-    pretrained_path=os.environ.get("VOXBIND_PYTHON_ROOT", "/home1/irteam/VoxBind")
-    + "/voxbind/exps/260701_plinder_v2p1_box_atomblob7_cdg_channelvit_full_pretrain/checkpoint_e0099.pth.tar",
-    patch=8, dim=512, depth=12, heads=8, mlp_ratio=4, c_out=16,
+    pretrained_path=os.environ.get(
+        "FUNCBIND_DENSITY_ENCODER",
+        "/home1/irteam/VoxBind/voxbind/exps/260806_cdg_100m_v2_ep100/checkpoint_e0025.pth.tar",
+    ),
+    patch=8, dim=640, depth=18, heads=10, mlp_ratio=4, c_out=16,
     pos_encoding="learnable", patch_embed_mode="channel_group",
-    channel_groups=[7, 4, 1, 1],
+    channel_groups=[7, 4, 2],
 )
 CODE_DIM, GRID, LATENT_EXTENT = 128, 16, 32.0
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
@@ -43,7 +45,7 @@ def check(name, ok, detail=""):
 
 
 print(f"device={DEV}")
-print("\n== 1. encoder loads at the declared geometry ==")
+print("\n== 1. CDG v2 encoder loads at the declared geometry ==")
 dc = DensityCondition(
     density_cfg=DENS_CFG, code_dim=CODE_DIM, code_grid_dim=GRID,
     voxbind_root=DENS_CFG["voxbind_python_root"], hidden=192,
@@ -51,7 +53,7 @@ dc = DensityCondition(
 ).to(DEV)
 n_frozen = sum(p.numel() for p in dc.encoder.parameters())
 n_train = sum(p.numel() for p in dc.proj.parameters())
-check("strict load of atomblob7 v2.1", n_frozen > 0, f"{n_frozen:,} frozen params")
+check("strict load of CDG v2 epoch 25", n_frozen > 0, f"{n_frozen:,} frozen params")
 check("encoder is frozen", not any(p.requires_grad for p in dc.encoder.parameters()))
 
 print("\n== 2. projection width follows the fusion mode ==")

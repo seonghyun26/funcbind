@@ -4,22 +4,25 @@
 #   bash scripts/01_setup_mcp_density_data.sh
 #   ASSETS_SRC=/mnt/share/funcbind_assets bash scripts/01_setup_mcp_density_data.sh   # from a local copy
 #   SKIP_BUILD=1 bash scripts/01_setup_mcp_density_data.sh                            # fetch only
+#   MCPP_INCLUDE_ORIGINAL=1 MCPP_EXTRACT_ORIGINAL=1 bash scripts/01_setup_mcp_density_data.sh
+#       # also fetch/extract the 32.7 GB public raw archive (requires much more free space)
 #
 # WHAT IT PRODUCES
 #   funcbind/dataset/data/mcpp_dataset/         MCP structures + {train,val,test}_data.pt
 #   funcbind/dataset/data/mcpp_holo_xray_v1/    deposited 2Fo-Fc density, float16 memmap + manifest
 #   exps/neural_field/nf_unified/               neural-field weights (decoder/encoder)
 #   exps/funcbind/fb_unified/                   density-free MCP FuncBind, the fine-tune start point
-#   $ENCODER_DST                                frozen atomblob7 v2.1 density encoder
+#   $ENCODER_DST                                frozen CDG v2 epoch-25 density encoder
 #   $VOXBIND_ROOT                               VoxBind checkout -- the density branch imports
 #                                               voxbind.models.density_vit at runtime
 #
 # WHERE THE BYTES COME FROM
 #   * the maps themselves are PUBLIC and fetched by the build step: coordinates from RCSB,
 #     2Fo-Fc CCP4 from PDBe. That part needs only outbound HTTPS, no credentials.
-#   * the MCP dataset and the three checkpoints are NOT public. They come either from a
-#     directory you staged yourself ($ASSETS_SRC) or from the lab Dropbox via rclone
-#     (see notebook/html/dropbox-sync.md for configuring the `dropbox` remote).
+#   * the prepared MCP splits and original structure archive are public on Hugging Face.
+#     The three checkpoints come from individual shared links (NF_MODEL_URL,
+#     FB_MODEL_URL, CDG_MODEL_URL), a directory staged in ASSETS_SRC, or the lab
+#     Dropbox through rclone as a final fallback.
 #
 # The build step is RESUMABLE and incremental: re-running skips targets already downloaded
 # and built, so an interrupted run costs only the target in flight.
@@ -27,20 +30,19 @@ set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PY="${PY:-$REPO/.repro-env/bin/python}"
-# The density build needs gemmi (+scipy/numpy) and NO torch, and gemmi is deliberately not
-# in the training venv on every box -- on this one `.repro-env` has lightning+torch but no
-# gemmi, while the voxbind conda env has gemmi but no lightning. So the build step gets its
-# own interpreter knob. Point it at whichever env has gemmi, or pip install gemmi into $PY.
+# The Docker environment contains both training and density-build dependencies. PREP_PY
+# remains overridable for older local environments that keep gemmi in a separate env.
 PREP_PY="${PREP_PY:-$PY}"
 DATA="$REPO/funcbind/dataset/data"
 VOXBIND_ROOT="${VOXBIND_ROOT:-$(dirname "$REPO")/VoxBind}"
 VOXBIND_GIT="${VOXBIND_GIT:-}"                 # optional: git URL to clone if missing
-ENCODER_DST="${ENCODER_DST:-$REPO/assets/density_encoder/atomblob7_v2p1_e0099.pth.tar}"
-RECIPE="${RECIPE:-$REPO/funcbind/dataset/recipes/xray_resample_plinder_v2p1.json}"
+ENCODER_DST="${ENCODER_DST:-$VOXBIND_ROOT/voxbind/exps/260806_cdg_100m_v2_ep100/checkpoint_e0025.pth.tar}"
+RECIPE="${RECIPE:-$REPO/funcbind/dataset/recipes/xray_resample_plinder_v2_perelem.json}"
 
-# Staging source. Either a local/NFS directory holding the private assets, or empty to use
-# rclone. Layout expected under $ASSETS_SRC (same names as the Dropbox folders):
-#   mcpp_dataset/  nf_unified/  fb_unified/  atomblob7_v2p1_e0099.pth.tar
+# Staging source. Layout expected under $ASSETS_SRC (same names as the Dropbox folders):
+#   nf_unified/model.pt
+#   fb_unified/checkpoint.pth.tar
+#   results/task1-affinity/CDG-v2/checkpoint_e0025.pth.tar
 ASSETS_SRC="${ASSETS_SRC:-}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-dropbox:박성현/VoxBind}"
 
@@ -86,34 +88,75 @@ else
      runtime through denoiser.density.voxbind_python_root; without it training cannot start."
 fi
 
-# ── 2. private assets ─────────────────────────────────────────────────────────
-fetch() {  # fetch <name> <dest>
-    local name="$1" dest="$2"
-    if [ -e "$dest" ]; then say "have $name"; return 0; fi
-    mkdir -p "$(dirname "$dest")"
-    if [ -n "$ASSETS_SRC" ]; then
-        [ -e "$ASSETS_SRC/$name" ] || die "$ASSETS_SRC/$name not found"
-        say "copying $name from $ASSETS_SRC"
-        cp -r "$ASSETS_SRC/$name" "$dest"
-    else
-        command -v rclone >/dev/null || die "rclone not installed and ASSETS_SRC unset — see notebook/html/dropbox-sync.md"
-        say "rclone copy $name"
-        if [ -d "$dest" ] || [ "${name%.tar}" != "$name" ] || [[ "$name" != *.* ]]; then
-            rclone copy "$RCLONE_REMOTE/$name" "$dest" --progress || die "rclone failed for $name"
-        else
-            rclone copyto "$RCLONE_REMOTE/$name" "$dest" --progress || die "rclone failed for $name"
+# ── 2. public splits + private weights ────────────────────────────────────────
+download_shared_file() {  # download_shared_file <url> <dest> [sha256]
+    local url="$1" dest="$2" expected_sha="${3:-}" part
+    command -v curl >/dev/null || die "curl is required for shared-link downloads"
+    if [[ "$url" == *dropbox.com* ]]; then
+        if [[ "$url" == *dl=0* ]]; then
+            url="${url//dl=0/dl=1}"
+        elif [[ "$url" != *dl=1* ]]; then
+            [[ "$url" == *\?* ]] && url="${url}&dl=1" || url="${url}?dl=1"
         fi
     fi
+    part="$dest.part"
+    say "downloading $(basename "$dest") from shared link (URL hidden)"
+    curl --fail --location --continue-at - --retry 5 --retry-all-errors \
+        --retry-delay 5 --output "$part" "$url" || die "shared-link download failed: $dest"
+    [ -s "$part" ] || die "downloaded an empty file: $part"
+    if [ -n "$expected_sha" ]; then
+        printf '%s  %s\n' "$expected_sha" "$part" | sha256sum --check - \
+            || die "SHA-256 verification failed: $dest"
+    fi
+    mv "$part" "$dest"
 }
 
-fetch mcpp_dataset "$DATA/mcpp_dataset"
-fetch nf_unified   "$REPO/exps/neural_field/nf_unified"
-fetch fb_unified   "$REPO/exps/funcbind/fb_unified"
-fetch model_zoo/atomblob7_v2p1_e0099.pth.tar "$ENCODER_DST"
+fetch_file() {  # fetch_file <relative-name> <dest-file> [shared-url] [sha256]
+    local name="$1" dest="$2" url="${3:-}" expected_sha="${4:-}"
+    if [ -s "$dest" ]; then say "have $name"; return 0; fi
+    mkdir -p "$(dirname "$dest")"
+    if [ -n "$ASSETS_SRC" ]; then
+        [ -f "$ASSETS_SRC/$name" ] || die "$ASSETS_SRC/$name not found"
+        say "copying $name from $ASSETS_SRC"
+        cp "$ASSETS_SRC/$name" "$dest"
+    elif [ -n "$url" ]; then
+        download_shared_file "$url" "$dest" "$expected_sha"
+    else
+        command -v rclone >/dev/null || die "no shared URL/ASSETS_SRC and rclone is not configured for $name"
+        say "rclone copyto $name"
+        rclone copyto "$RCLONE_REMOTE/$name" "$dest" --progress || die "rclone failed for $name"
+    fi
+    [ -s "$dest" ] || die "asset is missing or empty after fetch: $dest"
+}
+
+download_args=(--dest "$DATA/mcpp_dataset")
+case "${MCPP_INCLUDE_ORIGINAL:-0}" in
+    0|false|no|'') ;;
+    1|true|yes) download_args+=(--include-original) ;;
+    *) die "MCPP_INCLUDE_ORIGINAL must be 0 or 1" ;;
+esac
+case "${MCPP_EXTRACT_ORIGINAL:-0}" in
+    0|false|no|'') ;;
+    1|true|yes) download_args+=(--extract-original) ;;
+    *) die "MCPP_EXTRACT_ORIGINAL must be 0 or 1" ;;
+esac
+say "checking/downloading public MCP data from Hugging Face"
+"$PY" "$REPO/scripts/download_mcpp_data.py" "${download_args[@]}" || die "MCP download failed"
+
+fetch_file nf_unified/model.pt \
+    "$REPO/exps/neural_field/nf_unified/model.pt" \
+    "${NF_MODEL_URL:-}" "${NF_MODEL_SHA256:-}"
+fetch_file fb_unified/checkpoint.pth.tar \
+    "$REPO/exps/funcbind/fb_unified/checkpoint.pth.tar" \
+    "${FB_MODEL_URL:-}" "${FB_MODEL_SHA256:-}"
+fetch_file results/task1-affinity/CDG-v2/checkpoint_e0025.pth.tar \
+    "$ENCODER_DST" "${CDG_MODEL_URL:-}" "${CDG_MODEL_SHA256:-}"
 
 [ -f "$DATA/mcpp_dataset/train_data.pt" ] || die "mcpp_dataset looks wrong: no train_data.pt"
 [ -f "$REPO/exps/funcbind/fb_unified/checkpoint.pth.tar" ] || die "fb_unified has no checkpoint.pth.tar"
 [ -f "$ENCODER_DST" ] || die "no density encoder at $ENCODER_DST"
+export FUNCBIND_DENSITY_ENCODER="$ENCODER_DST"
+export VOXBIND_PYTHON_ROOT="$VOXBIND_ROOT"
 
 # ── 3. normalization recipe ───────────────────────────────────────────────────
 # These constants must be the ones the encoder was pretrained with; a differently
@@ -141,5 +184,5 @@ else
         ${LIMIT:+--limit "$LIMIT"} || die "density build failed"
 fi
 
-say "done. next: scripts/02_train_mcp_density_conditioned.sh"
+say "done. next: scripts/2_train.sh"
 say "run scripts/preflight_mcp_density.py first — on 80 GB cards it will tell you the recipe does not fit as-is"

@@ -23,6 +23,10 @@ CHUNKS=${CHUNKS:-0,1,2,3,4,5,6,7}
 DRY_RUN=${DRY_RUN:-}
 RUN=${RUN:-paper_run}
 NPR=${NPR:-100}
+CONFIG=${CONFIG:-sample_fb_mcpp_holo_density}
+FB_PATH=${FB_PATH:-$REPO/exps/funcbind/fb_mcpp_holo_density}
+MCP_AUTO_FETCH_MODEL=${MCP_AUTO_FETCH_MODEL:-1}
+export CONFIG FB_PATH MCP_AUTO_FETCH_MODEL
 
 LOG="$REPO/artifacts/reproduction/mcpp/$RUN/launcher.log"
 mkdir -p "$(dirname "$LOG")"
@@ -41,6 +45,34 @@ base_count=$((TOTAL_TARGETS / GPU_COUNT))
 remainder=$((TOTAL_TARGETS % GPU_COUNT))
 
 say "MCP reproduction: $TOTAL_TARGETS targets on $GPU_COUNT H100 GPUs, chunks=$CHUNKS, minfree=${MINFREE}MiB, npr=$NPR"
+say "config=$CONFIG, checkpoint=$FB_PATH"
+
+if [ -z "$DRY_RUN" ]; then
+    for required_file in \
+        "$REPO/funcbind/dataset/data/mcpp_dataset/test_data.pt" \
+        "$REPO/exps/neural_field/nf_unified/model.pt"; do
+        if [ ! -f "$required_file" ]; then
+            say "required input missing: $required_file"
+            exit 2
+        fi
+    done
+
+    if [ "$CONFIG" = sample_fb_mcpp_holo_density ]; then
+        density_dir="$REPO/funcbind/dataset/data/mcpp_holo_xray_v1"
+        if [ ! -d "$density_dir" ]; then
+            say "MCP holo-density data missing: $density_dir"
+            exit 2
+        fi
+        if [ ! -s "$FB_PATH/checkpoint.pth.tar" ]; then
+            if [ "$MCP_AUTO_FETCH_MODEL" = 1 ]; then
+                MCP_MODEL_DIR="$FB_PATH" "$HERE/pull_mcpp_density_model.sh"
+            else
+                say "density checkpoint missing: $FB_PATH/checkpoint.pth.tar"
+                exit 2
+            fi
+        fi
+    fi
+fi
 
 for g in ${CHUNKS//,/ }; do
     if ! [[ "$g" =~ ^[0-9]+$ ]] || (( g >= GPU_COUNT )); then

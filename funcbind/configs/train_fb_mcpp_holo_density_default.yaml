@@ -1,6 +1,6 @@
 defaults:
   - dset: omni
-  - denoiser: unet_edm2_XXXL_density_atomblob7_default
+  - denoiser: unet_edm2_XXXL_density_cdg_v2_default
   - sampling: sampling_xsmall
   - sampler: diffusion
   - override hydra/job_logging: custom
@@ -12,7 +12,7 @@ wandb_tags:
   - funcbind
   - mcpp
   - fusion
-  - atomblob7_v2p1_encoder
+  - cdg_v2_e0025_encoder
   - receptor_ed
   - full_holo_ed
   - zero_init
@@ -28,9 +28,9 @@ seed: 1234
 nf_pretrained_path: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/exps/neural_field/nf_unified
 
 # Start exactly from the density-free MCP-capable FuncBind weights -- NOT from the
-# protein-first chain: its projection has a different input width (density-only, and the
-# champion's 640-dim encoder), so its weights do not transfer. This is a fresh fine-tune
-# of the same base, with the fusion and encoder the VoxBind benchmark actually favoured.
+# protein-first chain: its projection has a different input width, so its weights do not
+# transfer. This is a fresh fine-tune of the same density-free base using CDG v2 epoch 25,
+# the representation checkpoint shared with task1-affinity, and default fusion.
 # The density projection is absent from the base checkpoint and remains its exact zero
 # initialization, so step 0 is again bit-identical to the density-free model.
 fb_pretrained_path: ${oc.env:FUNCBIND_ROOT,/home1/irteam/funcbind}/exps/funcbind/fb_unified

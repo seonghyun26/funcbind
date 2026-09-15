@@ -23,15 +23,31 @@ To select another existing base, set `VOXBIND_BASE=<image:tag>` when running
 
 ## Start the container
 
-Prepare persistent directories and optional Dropbox shared-file URLs:
+Prepare persistent directories and model URLs. Copy
+[`mcp_assets.env.example`](mcp_assets.env.example) to `scripts/mcp_assets.env`,
+fill `CDG_MODEL_URL` with the separately supplied **file** link, and source it
+before starting Docker. The filled file is ignored by Git and the VoxBind Docker
+build context; do not commit private links or credentials.
+
+| Variable | Required checkpoint | Source | Size |
+|---|---|---|---|
+| `FB_MODEL_URL` | Density-free FuncBind fine-tuning start point | [Official FuncBind checkpoint](https://huggingface.co/mkirchmeyer/funcbind/resolve/f42d3daeb6e7c1fa2b20096f9a147aa3b1f8814f/fb_unified/checkpoint.pth.tar) | 61.68 GB |
+| `NF_MODEL_URL` | Pretrained neural-field encoder/decoder | [Official NF checkpoint](https://huggingface.co/mkirchmeyer/funcbind/resolve/f42d3daeb6e7c1fa2b20096f9a147aa3b1f8814f/nf_unified/model.pt) | 1.45 GB |
+| `CDG_MODEL_URL` | Frozen CDG v2 epoch-25 density encoder | Dropbox file link supplied separately; `VoxBind/results/task1-affinity/CDG-v2/checkpoint_e0025.pth.tar` | 1.19 GB |
+
+The example includes SHA-256 checksums for all three files. Public URLs were
+checked on 2026-09-15. The CDG file is uploaded; its link/access must be supplied
+separately. No new density-conditioned MCP checkpoint is required to start
+fine-tuning. `MCP_MODEL_URL` is optional and only downloads a separately trained
+checkpoint for generation, not the density-free starting model.
 
 ```bash
-export NF_MODEL_URL='.../model.pt?dl=0'
-export FB_MODEL_URL='.../checkpoint.pth.tar?dl=0'
-export CDG_MODEL_URL='.../checkpoint_e0025.pth.tar?dl=0'
+# On the host, from the VoxBind repository root, after filling the local copy:
+source FuncBind/scripts/mcp_assets.env
 
 docker run --rm -it --gpus all --shm-size=32g --cpus=32 --memory=256g \
   -e NF_MODEL_URL -e FB_MODEL_URL -e CDG_MODEL_URL \
+  -e NF_MODEL_SHA256 -e FB_MODEL_SHA256 -e CDG_MODEL_SHA256 \
   -e MCP_MODEL_URL -e MCP_MODEL_SHA256 \
   -v /path/to/funcbind-data:/workspace/FuncBind/funcbind/dataset/data \
   -v /path/to/funcbind-exps:/workspace/FuncBind/exps \
@@ -40,8 +56,12 @@ docker run --rm -it --gpus all --shm-size=32g --cpus=32 --memory=256g \
   voxbind-funcbind:sb
 ```
 
-Dropbox shared links need no rclone configuration. If a URL is omitted, the
-data script falls back to `ASSETS_SRC`, then a configured `rclone` remote.
+Public Hugging Face URLs and downloadable public Dropbox file links need no
+rclone configuration or account login. Team-only/password-protected links will
+not work for this unattended download. An existing destination is reused first;
+otherwise `ASSETS_SRC` takes priority over URLs, then a configured `rclone`
+remote is the final fallback. Leave `ASSETS_SRC` unset when using the URLs.
+Checksums are verified on new URL downloads; existing files are reused as-is.
 
 H100 target: one node with **8 x H100 80GB**, at least 32 CPU cores and preferably
 256 GiB host RAM allocated to the job (the example sets limits, not reservations).
@@ -60,6 +80,11 @@ bash scripts/1_data_process.sh
 This downloads the public MCP splits and original structures, then downloads
 RCSB coordinates and PDBe 2Fo-Fc maps and builds the X-ray density cache. It is
 resumable and refuses downloads that violate its free-space safety margin.
+The public source is [Willete3/mcpp-dataset](https://huggingface.co/datasets/Willete3/mcpp-dataset/tree/main):
+`train_data.pt`, `val_data.pt`, `test_data.pt`, and `mcpp_dataset.tar.gz` (~32.7 GB
+compressed). X-ray files are fetched per target automatically; no separate
+private data link is required. Plan additional space for extraction and density
+caches, beyond the checkpoint-volume reserve above.
 
 ## 2. Fine-tune
 

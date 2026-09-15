@@ -61,3 +61,6 @@ Thumbs.db
 
 # Agent tooling local state (oh-my-claudecode)
 .omc/
+
+# Local SB asset links; commit only the public example, never the filled copy.
+/scripts/mcp_assets.env

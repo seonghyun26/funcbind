@@ -14,8 +14,9 @@ Checks, in order, the things that otherwise fail hours in:
     params 4B/p + grads 4B/p + AdamW(exp_avg, exp_avg_sq) 8B/p + EMA 4B/p = 20 B/param
 
 DDP replicates all of it on every rank, so adding GPUs does not lower that per-rank
-budget. The H100 config preserves bf16-mixed, batch 1, and non-foreach AdamW.
-It cannot fit 80 GB under plain DDP; sharding/offload support is still required.
+budget. The H100 config uses ZeRO-1 optimizer state sharding, rank-zero CPU EMA,
+and activation checkpointing while preserving bf16-mixed. Its estimate is NOT a
+full-model capacity measurement. First-step and validation peaks must be tested.
 
     python scripts/preflight_mcp_density.py [--config train_fb_mcpp_holo_density_h100]
 """
@@ -39,6 +40,18 @@ def check(name, good, detail=""):
     print(f"  [{'OK  ' if good else 'FAIL'}] {name}{'  — ' + detail if detail else ''}")
     ok = ok and good
     return good
+
+
+def estimate_memory(cfg, params, world_size):
+    true_bf16 = cfg.get("precision", "bf16-mixed") == "bf16-true"
+    widths = TRUE_BF16_BYTES_PER_PARAM if true_bf16 else MIXED_BYTES_PER_PARAM
+    per = {k: params * b / GIB for k, b in widths.items()}
+    performance = cfg.get("performance", {})
+    if performance.get("optimizer_sharding") == "zero1":
+        per["adamw"] /= max(1, world_size)
+    if performance.get("ema_cpu", False):
+        per["ema"] = 0.0
+    return per
 
 
 def main():
@@ -105,14 +118,18 @@ def main():
     if a.skip_memory:
         return 0 if ok else 1
 
-    print("\n== 3. per-GPU memory, plain DDP (the decisive one) ==")
+    print("\n== 3. per-GPU memory estimate (not a capacity measurement) ==")
     precision = str(cfg.get("precision", "bf16-mixed"))
     true_bf16 = precision == "bf16-true"
-    bytes_per_param = TRUE_BF16_BYTES_PER_PARAM if true_bf16 else MIXED_BYTES_PER_PARAM
-    per = {k: a.params * b / GIB for k, b in bytes_per_param.items()}
+    import torch
+    requested_ranks = a.expected_gpus if a.expected_gpus is not None else max(1, torch.cuda.device_count())
+    per = estimate_memory(cfg, a.params, requested_ranks)
     static = sum(per.values())
-    total_bytes = sum(bytes_per_param.values())
-    print(f"         precision={precision}, {a.params/1e9:.2f}B params × {total_bytes} B/param")
+    performance = cfg.get("performance", {})
+    print(f"         precision={precision}, {a.params/1e9:.2f}B params, ranks={requested_ranks}")
+    print(f"         optimizer_sharding={performance.get('optimizer_sharding', 'none')}, "
+          f"ema_cpu={performance.get('ema_cpu', False)}, "
+          f"activation_checkpointing={performance.get('activation_checkpointing', False)}")
     for k, v in per.items():
         print(f"           {k:8s} {v:6.1f} GiB")
     print(f"           {'TOTAL':8s} {static:6.1f} GiB static, before activations")
@@ -126,7 +143,6 @@ def main():
     # still reach one extra gradient-sized bucket allocation during the first backward.
     # Include it for multi-rank launches so the H100 go/no-go number is deliberately
     # stricter than the eventual steady-state footprint.
-    requested_ranks = a.expected_gpus if a.expected_gpus is not None else 1
     ddp_first_step_transient = per["grads"] if requested_ranks > 1 else 0.0
     estimated_peak = (
         static
@@ -142,6 +158,12 @@ def main():
         f"(batch={batch_size}, activations~{activation_estimate:.1f}, "
         f"reserve={RUNTIME_RESERVE_GIB:.1f})"
     )
+    if performance.get("ema_cpu", False):
+        cpu_ema = a.params * 4 / GIB
+        print(f"         rank-zero CPU EMA ~{cpu_ema:.1f} GiB, plus another "
+              f"~{cpu_ema:.1f} GiB during validation, plus loader/checkpoint RAM")
+    print("         Shard balance is approximate; frozen encoders and temporary allocations "
+          "need headroom. Activation checkpointing receives no assumed discount here.")
 
     try:
         import torch
@@ -161,16 +183,14 @@ def main():
             check("estimated peak fits one GPU", fits,
                   f"{'%.1f GiB spare' % headroom if fits else 'short by %.1f GiB' % -headroom}")
             if not fits:
-                print("\n         DDP replicates every byte on every rank, so more GPUs do NOT help.")
                 if static >= vram:
                     print("         Static state alone exceeds VRAM; lowering batch size cannot fix it.")
-                    print("         To preserve bf16-mixed, implement FSDP/ZeRO sharding or CPU offload.")
                 else:
-                    print("         Lower batch size, disable optimizer foreach, or add sharding/offload.")
+                    print("         Measure checkpointed activation/bucket peaks before overriding this guard.")
         else:
             check("CUDA device available", False, "run this inside the GPU container")
     except Exception as exc:  # noqa: BLE001
-        print(f"         (torch unavailable: {exc})")
+        check("GPU memory check completed", False, str(exc))
 
     print("\n" + ("PREFLIGHT PASSED" if ok else "PREFLIGHT FAILED — fix the items above"))
     return 0 if ok else 1

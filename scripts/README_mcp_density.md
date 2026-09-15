@@ -64,14 +64,38 @@ The default uses `bf16-mixed` on GPUs `0-7`, with train and validation batch
 size 1, accumulation 95 (effective batch 760), eager execution, and non-foreach
 AdamW. Model weights, gradients, optimizer moments, and EMA remain FP32.
 
-**H100 80GB is blocked with the current plain DDP strategy.** Static state alone
-requires about 95.8 GiB per GPU before activations. DDP replicates that state on
-all eight GPUs, so lowering batch size cannot make it fit. Keeping mixed
-precision requires implementing FSDP/ZeRO sharding or CPU offload; this workflow
-does not yet provide either. The preflight will reject an H100 launch.
+The H100 profile wraps the existing AdamW in PyTorch ZeRO-1, keeps one FP32 EMA
+on rank-zero CPU, and recomputes UNet/receptor blocks during backward. Forced
+weight normalization is skipped on recomputation so weights are not changed twice.
+Static trainable state is approximately **43.1 GiB/GPU on 8 GPUs**, compared with
+95.8 GiB under ordinary DDP. This excludes activations, communication buffers,
+frozen models, and temporary allocations; it does not prove H100 capacity.
 
-On hardware with enough memory, use `SMOKE=1 bash scripts/2_train.sh` first;
-it runs one tiny epoch without writing the large training checkpoint.
+Use `SMOKE=1 bash scripts/2_train.sh` on the target H100 node first. It uses the
+full model on a small data subset without saving a large checkpoint. CPU EMA
+needs ~19.2 GiB on rank zero and another ~19.2 GiB temporarily during evaluation,
+in addition to other host-memory requirements. EMA transfers may reduce speed.
+
+Checkpoints retain the standard model/EMA keys, so `3_generate.sh` reads them
+without optimizer shards. Resuming training requires `checkpoint.pth.tar` AND
+the referenced `optimizer_shards/` directory on shared storage, with the same
+GPU count and parameter partition. Set `resume_optimizer=true` and point
+`fb_pretrained_path` at that run when resuming. Initial fine-tuning keeps a fresh
+optimizer. Loader-worker augmentation RNG is not restored exactly.
+
+A full training checkpoint is ~77 GiB or more across its files. Saving checks
+for the new checkpoint size plus a 30 GiB free-space reserve; previous latest/
+best checkpoints and optimizer shards are not automatically deleted. Keep enough
+space for old and new checkpoints, and review obsolete shards before removal.
+
+Small distributed regression (CPU by default; use `--accelerator cuda` for GPUs):
+
+```bash
+python scripts/smoke_h100_memory.py --devices 2 --out artifacts/h100_memory_smoke
+```
+
+This checks AdamW/reference parity, CPU EMA evaluation, sharded save/resume and
+the disk guard. It is not a full-model/H100 capacity or generation-quality test.
 
 ## 3. Generate
 
@@ -102,11 +126,23 @@ python scripts/smoke_mcp_train_sample.py \
 ```
 
 This downloads the public test split and deposited PDB/map, processes one density
-box, runs three production-loop training steps in `bf16-mixed`, and samples one
+box, runs three production-loop training steps in `bf16-mixed`, reloads the
+model/EMA/optimizer checkpoint for one more training step, and samples one
 latent with four diffusion steps before NF field decoding. It reuses the original
-MCP reference files and pretrained NF/CDG weights. Outputs are `report.json` and
-`sample.pt`. Use a fresh output directory to test fresh downloads.
+MCP reference files and pretrained NF/CDG weights. Outputs are `report.json`,
+`sample.pt`, and a small-model checkpoint with optimizer shards. It also tests
+CPU EMA and activation checkpointing. Use a fresh output directory to test fresh
+downloads, or `--prepared-root <previous-smoke-output>` to reuse prepared data
+without network access. Add `--devices 2` with prepared data to exercise ZeRO-1
+and distributed training; the one-GPU variant cannot shard optimizer states.
 
 The denoiser is reduced and randomly initialized. This smoke uses a test example
 only to check the code path; it does not validate full-model training, atom/SDF
 generation, or molecular quality, and its outputs are not evaluation results.
+
+Verification (2026-09-15): 16 regression tests passed; 4 separate apo-fixture tests
+were skipped. Two-process CPU and two-GPU AdamW/EMA/save-resume regressions passed.
+On two RTX 3090s, the reduced MCP model completed 3 training updates, checkpoint
+reload and update 4, then EMA sampling and NF decoding with real CDG v2/1bm2 data.
+These used the existing SB environment with source mounts; rebuild the child
+image for delivery. Full 5.14B H100 x8 training and molecular quality remain unverified.

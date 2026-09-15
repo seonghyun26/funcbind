@@ -6,8 +6,8 @@
 #   FORCE=1 ... # launch even if the preflight says the memory does not fit
 #
 # The H100 config preserves bf16-mixed, batch 1, eager execution, and
-# non-foreach AdamW. Plain DDP still needs ~95.8 GiB/rank before activations;
-# an H100 80 GB launch requires sharding/offload support first.
+# non-foreach AdamW, ZeRO-1, CPU EMA, and block activation checkpointing.
+# Static state is ~43.1 GiB/rank on 8 GPUs; full-model peaks still need validation.
 #
 # WHAT THIS TRAINS
 #   FuncBind's MCP denoiser, fine-tuned from the density-free base (exps/funcbind/fb_unified)
@@ -79,7 +79,7 @@ say "preflight"
 if ! "$PY" "$REPO/scripts/preflight_mcp_density.py" \
     --config "$CONFIG" --expected-gpus "$N_GPUS" --batch-size "$BATCH_SIZE"; then
     [ -n "${FORCE:-}" ] || die "preflight failed (set FORCE=1 to launch anyway, e.g. if you have
-     already switched the strategy or precision as the memory section suggests)"
+     already measured this recipe's full-model peak on the target hardware)"
     say "preflight failed but FORCE=1 was set — continuing"
 fi
 

@@ -1,6 +1,6 @@
 from funcbind.dataset.field_maker import FieldMaker
 from funcbind.models.adamw import AdamW
-from funcbind.models.phema import PowerFunctionEMA
+from funcbind.models.phema import CPUPowerFunctionEMA, create_ema
 from funcbind.utils.utils_base import overwrite_config
 import torch
 import os
@@ -11,6 +11,7 @@ from funcbind.models.denoiser import FuncBind
 from collections import OrderedDict
 from torch import nn
 from omegaconf import OmegaConf
+from funcbind.utils.training_state import load_cpu_checkpoint
 
 
 def create_funcbind(config: dict, code_stats: dict, fabric: object, num_classes=None):
@@ -23,7 +24,15 @@ def create_funcbind(config: dict, code_stats: dict, fabric: object, num_classes=
     Returns:
         model: The created model.
     """
-    model = FuncBind(config, code_stats=code_stats, fabric=fabric, num_classes=num_classes)
+    # Build directly on the training device: eight transient CPU copies of the
+    # 5.14B model would exhaust host RAM before DDP even starts.
+    with fabric.init_module():
+        model = FuncBind(config, code_stats=code_stats, fabric=fabric, num_classes=num_classes)
+    if config.get("performance", {}).get("activation_checkpointing", False):
+        from funcbind.models.unet3d import enable_activation_checkpointing
+        if config.get("performance", {}).get("compile_backend"):
+            raise ValueError("Activation checkpointing recipe requires eager execution")
+        enable_activation_checkpointing(model)
 
     # n params
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -53,7 +62,7 @@ def load_funcbind(
     Returns:
         tuple: A tuple containing the loaded model, optimizer (if provided), and the number of epochs trained.
     """
-    checkpoint = fabric.load(os.path.join(pretrained_path, "checkpoint.pth.tar"))
+    checkpoint = load_cpu_checkpoint(os.path.join(pretrained_path, "checkpoint.pth.tar"))
     if config is None:
         config = checkpoint["config"]
 
@@ -81,13 +90,15 @@ def load_funcbind(
         with torch.no_grad():
             assert "ema_stds" in config and config["ema_stds"] is not None and (len(config["ema_stds"]) > 0 and config["ema_stds"][0] != 0.0), "ema_stds must be set and non-empty"
             fabric.print(">> using PowerFunctionEMA with stds", config["ema_stds"])
-            model_ema = PowerFunctionEMA(
-                model,
-                stds=config["ema_stds"],
-                foreach=bool(config.get("performance", {}).get("ema_foreach", True)),
-            )
-            if load_ema:
-                load_unet(checkpoint, model_ema.emas[0], fabric, sd="state_dict_ema")
+            model_ema = create_ema(model, config, fabric)
+            if load_ema and model_ema is not None:
+                if isinstance(model_ema, CPUPowerFunctionEMA):
+                    saved_ema = checkpoint["state_dict_ema"]
+                    if "emas" not in saved_ema:
+                        saved_ema = dict(stds=config["ema_stds"], emas=[saved_ema])
+                    model_ema.load_state_dict(saved_ema)
+                else:
+                    load_unet(checkpoint, model_ema.emas[0], fabric, sd="state_dict_ema")
             fabric.print(">> loaded model_ema")
 
     acc_iter = checkpoint.get("acc_iter", 0)
@@ -105,18 +116,19 @@ def load_funcbind(
     epoch = int(checkpoint.get("epoch", 0))
 
     if train:
+        optimizer_state = checkpoint.get("optimizer") if config.get("resume_optimizer", True) else None
         if return_global_step:
             return (
                 model,
                 model_ema,
-                checkpoint["optimizer"],
+                optimizer_state,
                 code_stats,
                 acc_iter,
                 global_step,
                 best_res,
                 epoch,
             )
-        return model, model_ema, checkpoint["optimizer"], code_stats, acc_iter
+        return model, model_ema, optimizer_state, code_stats, acc_iter
     else:
         return model, code_stats, acc_iter
 
@@ -142,7 +154,7 @@ def learning_rate_schedule(optimizer, iteration, config, world_size=1):
 
 
 def load_funcbind_sampling(config, fabric):
-    checkpoint_fb = fabric.load(os.path.join(config["fb_pretrained_path"], "checkpoint.pth.tar"))
+    checkpoint_fb = load_cpu_checkpoint(os.path.join(config["fb_pretrained_path"], "checkpoint.pth.tar"))
     if "sampler" in checkpoint_fb["config"]:
         checkpoint_fb["config"]["sampler"] = {}
         if "mcmc" in checkpoint_fb["config"]["sampler"]:
@@ -200,7 +212,6 @@ def load_unet(
         nn.Module: The neural network model with the loaded state dictionary.
     """
     net_dict = net.state_dict()
-    weight_first_layer_before = next(iter(net_dict.values())).sum()
     new_state_dict = OrderedDict()
     if 'emas' in checkpoint[sd]:  # for PowerFunctionEMA
         state_dicts_ckpt = checkpoint[sd]['emas'][0]
@@ -214,8 +225,8 @@ def load_unet(
     net_dict.update(pretrained_dict)
     net.load_state_dict(net_dict)
 
-    weight_first_layer_after = next(iter(net_dict.values())).sum()
-    assert weight_first_layer_before != weight_first_layer_after, "loading did not work"
+    if not pretrained_dict:
+        raise ValueError("No matching denoiser weights in checkpoint")
     fabric.print(">> loaded denoiser")
 
     return net
@@ -225,26 +236,25 @@ def create_optimizer(funcbind, config, fabric):
     optimizer_foreach = bool(
         config.get("performance", {}).get("optimizer_foreach", True)
     )
+    optimizer_class = AdamW if config["wd"] >= 0 else torch.optim.Adam
+    kwargs = dict(lr=config["lr"], betas=(0.9, config["dset"]["beta2"]),
+                  foreach=optimizer_foreach)
     if config["wd"] >= 0:
-        fabric.print(
-            f">> using AdamW with weight decay {config['wd']} "
-            f"(foreach={optimizer_foreach})"
-        )
-        optimizer = AdamW(
-            funcbind.parameters(),
-            lr=config["lr"],
-            weight_decay=config["wd"],
-            betas=(0.9, config["dset"]["beta2"]),
-            foreach=optimizer_foreach,
-        )
+        kwargs["weight_decay"] = config["wd"]
+    sharding = config.get("performance", {}).get("optimizer_sharding", "none")
+    if sharding not in ("none", "zero1"):
+        raise ValueError(f"Unknown optimizer_sharding: {sharding}")
+    # Keep the legacy parameter ordering for loading old optimizer checkpoints.
+    # Frozen parameters never acquire Adam state.
+    parameters = list(funcbind.parameters())
+    if sharding == "zero1" and fabric.world_size > 1:
+        from torch.distributed.optim import ZeroRedundancyOptimizer
+        optimizer = ZeroRedundancyOptimizer(parameters, optimizer_class=optimizer_class,
+            overlap_with_ddp=False, parameters_as_bucket_view=False, **kwargs)
     else:
-        fabric.print(f">> using Adam (foreach={optimizer_foreach})")
-        optimizer = torch.optim.Adam(
-            funcbind.parameters(),
-            lr=config["lr"],
-            betas=(0.9, config["dset"]["beta2"]),
-            foreach=optimizer_foreach,
-        )
+        optimizer = optimizer_class(parameters, **kwargs)
+    fabric.print(f">> {optimizer_class.__name__}, sharding={sharding}, "
+                 f"world_size={fabric.world_size}, foreach={optimizer_foreach}")
     optimizer.zero_grad(set_to_none=True)
     return optimizer
 

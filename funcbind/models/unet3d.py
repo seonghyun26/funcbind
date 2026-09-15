@@ -3,6 +3,42 @@
 
 import numpy as np
 import torch
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
+from torch.utils.checkpoint import checkpoint
+
+
+_recomputing = ContextVar("funcbind_recomputing", default=False)
+
+
+@contextmanager
+def _recompute_context():
+    token = _recomputing.set(True)
+    try:
+        yield
+    finally:
+        _recomputing.reset(token)
+
+
+def _checkpoint_contexts():
+    return nullcontext(), _recompute_context()
+
+
+def enable_activation_checkpointing(model):
+    """Recompute blocks without applying forced weight normalization twice."""
+    for module in model.modules():
+        if isinstance(module, (Block, BlockUncond)):
+            module.activation_checkpointing = True
+        if isinstance(module, MPConv):
+            module.checkpoint_recompute_aware = True
+
+
+def _run_block(module, *inputs):
+    if (getattr(module, "activation_checkpointing", False)
+            and module.training and torch.is_grad_enabled()):
+        return checkpoint(module._forward, *inputs, use_reentrant=False,
+                          context_fn=_checkpoint_contexts)
+    return module._forward(*inputs)
 
 
 #----------------------------------------------------------------------------
@@ -130,7 +166,9 @@ class MPConv(torch.nn.Module):
 
     def forward(self, x, gain=1):
         w = self.weight.to(torch.float32)  # i wonder why this is necessary
-        if self.training:
+        # Leave the ordinary/compiled path free of ContextVar accesses.
+        if self.training and (not getattr(self, "checkpoint_recompute_aware", False)
+                              or not _recomputing.get()):
             with torch.no_grad():
                 self.weight.copy_(normalize(w)) # forced weight normalization
         w = normalize(w) # traditional weight normalization
@@ -174,6 +212,9 @@ class BlockUncond(torch.nn.Module):
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1,1]) if self.num_heads != 0 else None
 
     def forward(self, x):
+        return _run_block(self, x)
+
+    def _forward(self, x):
         # Main branch.
         x = resample(x, f=self.resample_filter, mode=self.resample_mode)
         if self.flavor == 'enc':
@@ -248,6 +289,9 @@ class Block(torch.nn.Module):
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1,1]) if self.num_heads != 0 else None
 
     def forward(self, x, x_cond):
+        return _run_block(self, x, x_cond)
+
+    def _forward(self, x, x_cond):
         # Main branch.
         x = resample(x, f=self.resample_filter, mode=self.resample_mode)
         if self.flavor == 'enc':

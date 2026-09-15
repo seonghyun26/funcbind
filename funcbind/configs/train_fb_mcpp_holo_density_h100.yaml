@@ -3,12 +3,14 @@ defaults:
   - _self_
 
 # Preserve BF16 mixed precision: model, gradients, Adam moments, and EMA stay
-# FP32. Their ~95.8 GiB/rank static footprint does NOT fit H100 80 GB with the
-# current plain DDP strategy, even at batch 1. FSDP/ZeRO sharding or CPU offload
-# is required before launching on H100; the preflight should reject plain DDP.
+# FP32. ZeRO-1 shares Adam state; rank-zero CPU EMA avoids another GPU model.
+# Static trainable state is ~43.1 GiB/rank on 8 GPUs, before runtime overhead.
+# Full-model H100 peak usage must still be measured; small smoke != capacity proof.
 precision: bf16-mixed
+# Existing conservative rendering-batch preset, not a GPU hardware selector.
 gpu_type: a100
 save_checkpoints: true
+checkpoint_reserve_gib: 30
 
 dset:
   batch_size: 1
@@ -25,3 +27,8 @@ performance:
   # The foreach AdamW implementation materializes full-size sqrt/denominator
   # lists at optimizer.step(); process one parameter at a time on 80 GB cards.
   optimizer_foreach: false
+  optimizer_sharding: zero1
+  ema_cpu: true
+  activation_checkpointing: true
+  # Avoid holding the next GPU batch while the current backward is at its peak.
+  gpu_prefetch: false

@@ -173,7 +173,31 @@ def create_neural_field(config, fabric):
     return enc, dec
 
 
-def load_neural_field(nf_checkpoint, fabric, config = None, input = None, setup_fabric=True):
+class FrozenInferenceModule(torch.nn.Module):
+    """Local inference with Fabric autocast, without DDP collectives in validation."""
+    def __init__(self, module, fabric):
+        super().__init__()
+        self.module = fabric.to_device(module).eval().requires_grad_(False)
+        self.fabric = fabric
+
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
+
+    @torch.no_grad()
+    def forward(self, *args, **kwargs):
+        with self.fabric.autocast():
+            output = self.module(*args, **kwargs)
+        # Match Fabric MixedPrecision's FP32 output conversion.
+        from torch.utils._pytree import tree_map
+        return tree_map(lambda x: x.float() if isinstance(x, torch.Tensor)
+                        and x.is_floating_point() else x, output)
+
+
+def load_neural_field(nf_checkpoint, fabric, config = None, input = None, setup_fabric=True,
+                      inference_only=False, compile_models=True):
     """
     Load and initialize the neural field encoder and decoder from a checkpoint.
 
@@ -197,7 +221,7 @@ def load_neural_field(nf_checkpoint, fabric, config = None, input = None, setup_
     except KeyError as e:
         fabric.print(f">> Loading error dec: {e}.")
 
-    if config["decoder"].get("compile", True):
+    if compile_models and config["decoder"].get("compile", True):
         dec = torch.compile(dec)
     dec.eval()
 
@@ -206,12 +230,17 @@ def load_neural_field(nf_checkpoint, fabric, config = None, input = None, setup_
         enc = load_network(nf_checkpoint, enc, fabric, net_name=f"enc_{input}" if input is not None else "enc")
     except KeyError as e:
         fabric.print(f">> Loading error enc: {e}.")
-    enc = torch.compile(enc)
+    if compile_models:
+        enc = torch.compile(enc)
     enc.eval()
 
     if setup_fabric:
-        dec = fabric.setup_module(dec)
-        enc = fabric.setup_module(enc)
+        if inference_only:
+            dec = FrozenInferenceModule(dec, fabric)
+            enc = FrozenInferenceModule(enc, fabric)
+        else:
+            dec = fabric.setup_module(dec)
+            enc = fabric.setup_module(enc)
 
     return enc, dec
 

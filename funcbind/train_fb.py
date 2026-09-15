@@ -35,7 +35,10 @@ import copy
 import math
 import time
 
-from funcbind.models.phema import PowerFunctionEMA
+from funcbind.models.phema import CPUPowerFunctionEMA, create_ema, ema_evaluation
+from funcbind.utils.training_state import (
+    load_cpu_checkpoint, restore_optimizer_state, save_training_state,
+)
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
@@ -125,7 +128,7 @@ def main(config):
     fabric = setup_fabric(config)
 
     exp_name, dirname = config["exp_name"], config["dirname"]
-    config = OmegaConf.to_container(config)
+    config = OmegaConf.to_container(config, resolve=True)
     config["exp_name"], config["dirname"] = exp_name, dirname  # TODO: make this better
     makedir(dirname)
     val_save_dir = os.path.join(config["dirname"], "validation_plots")
@@ -135,8 +138,9 @@ def main(config):
     ##############################
     # load pretrained neural field
     ##############################
-    nf_checkpoint = fabric.load(os.path.join(config["nf_pretrained_path"], "model.pt"))
-    enc, dec = load_neural_field(nf_checkpoint, fabric)
+    nf_checkpoint = load_cpu_checkpoint(os.path.join(config["nf_pretrained_path"], "model.pt"))
+    enc, dec = load_neural_field(nf_checkpoint, fabric, inference_only=True,
+        compile_models=bool(config.get("performance", {}).get("compile_backend", "")))
     dec_module = dec.module if hasattr(dec, "module") else dec
 
     ##############################
@@ -145,6 +149,7 @@ def main(config):
 
     # nf and funcbind config update
     config_nf = update_config_nf(nf_checkpoint["config"], config)
+    del nf_checkpoint
     config["decoder"] = config_nf["decoder"]
     config["encoder"] = config_nf["encoder"]
 
@@ -235,11 +240,7 @@ def main(config):
         with torch.no_grad():
             assert "ema_stds" in config and config["ema_stds"] is not None and (len(config["ema_stds"]) > 0 and config["ema_stds"][0] != 0.0), "ema_stds must be set and non-empty"
             fabric.print(">> using PowerFunctionEMA with stds", config["ema_stds"])
-            funcbind_ema = PowerFunctionEMA(
-                funcbind,
-                stds=config["ema_stds"],
-                foreach=bool(config.get("performance", {}).get("ema_foreach", True)),
-            )
+            funcbind_ema = create_ema(funcbind, config, fabric)
     dec_module.code_stats = code_stats
 
     ##############################
@@ -277,12 +278,16 @@ def main(config):
     # deliberately kept outside DDP, so align its dtype explicitly: leaving it fp32
     # both costs ~9.6 GiB/rank and makes foreach_lerp reject BF16 model parameters.
     train_parameter = next(p for p in funcbind.parameters() if p.requires_grad)
-    funcbind_ema.to(device=train_parameter.device, dtype=train_parameter.dtype)
-    fabric.print(f">> EMA dtype aligned to {train_parameter.dtype}")
+    if funcbind_ema is not None and not isinstance(funcbind_ema, CPUPowerFunctionEMA):
+        funcbind_ema.to(device=train_parameter.device, dtype=train_parameter.dtype)
+    fabric.print(f">> EMA: {'rank-zero CPU' if config.get('performance', {}).get('ema_cpu') else 'GPU'}, "
+                 f"model dtype={train_parameter.dtype}")
     if checkpoint_optimizer is not None:
         fabric.print(">> loading optimizer state")
-        optimizer.load_state_dict(checkpoint_optimizer)
+        restore_optimizer_state(optimizer, checkpoint_optimizer, funcbind, fabric,
+                                config["fb_pretrained_path"])
         configure_optimizer_runtime(optimizer, config)
+        del checkpoint_optimizer
 
     ##############################
     # metrics
@@ -291,7 +296,7 @@ def main(config):
     if config["sampler"]["val_sigmas"] is not None:
         val_sigmas = np.array(config["sampler"]["val_sigmas"])
     else:
-        val_sigmas = funcbind.sigma_distribution.values.numpy()
+        val_sigmas = funcbind.sigma_distribution.values.cpu().numpy()
     metrics_val = {}
     for sigma in val_sigmas:
         metrics_val[sigma] = {
@@ -360,7 +365,7 @@ def main(config):
                         val_weights_over_vars,
                         val_logvars,
                         val_validity,
-                    ) = val_denoiser(
+                    ) = validate_ema(
                         loader_val,
                         enc,
                         dec_module,
@@ -437,39 +442,37 @@ def main(config):
             (epoch + 1) % checkpoint_every == 0
             or epoch == config["num_epochs"] - 1
         ):
-            with fabric.rank_zero_first():
-                if fabric.global_rank == 0:
-                    checkpoint_t0 = time.perf_counter()
-                    state = {
-                        "epoch": epoch + 1,
-                        "config": config,
-                        "state_dict": funcbind.state_dict(),
-                        "state_dict_ema": funcbind_ema.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "code_stats": dec_module.code_stats,
-                        "acc_iter": acc_iter,
-                        "global_step": global_step,
-                        "best_res": best_res,
-                    }
-                    try:
-                        checkpoint_path, best_path = _save_training_checkpoint(
-                            state,
-                            config["dirname"],
-                            is_best=is_best,
-                        )
+            if config.get("performance", {}).get("optimizer_sharding") == "zero1":
+                # Collective shard writes must be entered by every rank, not
+                # from the rank-zero-only branch below.
+                checkpoint_t0 = time.perf_counter()
+                best_res = fabric.broadcast(best_res, src=0)
+                metadata = dict(epoch=epoch + 1, config=config,
+                    code_stats=dec_module.code_stats, acc_iter=acc_iter,
+                    global_step=global_step, best_res=best_res)
+                checkpoint_path, _ = save_training_state(
+                    fabric, funcbind, optimizer, funcbind_ema, metadata,
+                    config["dirname"], is_best=is_best,
+                    reserve_gib=config.get("checkpoint_reserve_gib", 30),
+                )
+                checkpoint_saved = True
+                checkpoint_seconds = time.perf_counter() - checkpoint_t0
+                fabric.print(f">> checkpoint and optimizer shards saved: {checkpoint_path}")
+            else:
+                with fabric.rank_zero_first():
+                    if fabric.global_rank == 0:
+                        checkpoint_t0 = time.perf_counter()
+                        state = dict(epoch=epoch + 1, config=config,
+                            state_dict=funcbind.state_dict(),
+                            state_dict_ema=funcbind_ema.state_dict(),
+                            optimizer=optimizer.state_dict(),
+                            code_stats=dec_module.code_stats, acc_iter=acc_iter,
+                            global_step=global_step, best_res=best_res)
+                        checkpoint_path, _ = _save_training_checkpoint(
+                            state, config["dirname"], is_best=is_best)
                         checkpoint_saved = True
                         checkpoint_seconds = time.perf_counter() - checkpoint_t0
-                        fabric.print(
-                            f">> latest checkpoint saved: {checkpoint_path} "
-                            f" ({checkpoint_seconds:.1f}s)"
-                        )
-                        if best_path is not None:
-                            fabric.print(
-                                f">> new best checkpoint retained: {best_path}, "
-                                f"best_res: {best_res}"
-                            )
-                    except Exception as e:
-                        fabric.print(f"Error saving checkpoint: {e}")
+                        fabric.print(f">> latest checkpoint saved: {checkpoint_path}")
 
         # sample molecules
         sampling_metrics = None
@@ -783,7 +786,9 @@ def train_denoiser(
         global_step += 1
         optimizer_step_in_epoch += 1
 
-        if hasattr(model_ema, "emas"):
+        if model_ema is None:
+            pass  # CPU EMA exists only on rank zero.
+        elif isinstance(model_ema, CPUPowerFunctionEMA) or hasattr(model_ema, "emas"):
             model_ema.update(acc_iter, window_sample_count)
         else:
             model_ema.update(model)
@@ -850,6 +855,12 @@ def train_denoiser(
     return metrics.compute().item(), acc_iter, global_step
 
 
+def validate_ema(loader, enc, dec_module, ema, metrics, config, config_nf, **kwargs):
+    # Use the raw module, not the DDP wrapper: only rank zero performs validation.
+    with ema_evaluation(ema) as model, kwargs["fabric"].autocast():
+        return val_denoiser(loader, enc, dec_module, model, metrics, config, config_nf, **kwargs)
+
+
 @torch.no_grad()
 def val_denoiser(
     loader,
@@ -883,7 +894,7 @@ def val_denoiser(
     """
     if hasattr(model, "emas"):
         model = model.emas[0]
-    else:
+    elif hasattr(model, "module"):
         model = model.module
     model.eval()
     validity = {}

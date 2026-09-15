@@ -26,6 +26,9 @@ def test_h100_config_preserves_mixed_precision(monkeypatch):
     assert config.accum_steps == 95
     assert config.performance.compile_backend == ""
     assert not config.performance.optimizer_foreach
+    assert config.performance.optimizer_sharding == "zero1"
+    assert config.performance.ema_cpu
+    assert config.performance.activation_checkpointing
 
 
 def test_mixed_bf16_adamw_and_ema_keep_fp32_state():
